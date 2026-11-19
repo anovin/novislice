@@ -581,11 +581,11 @@ void SliceEngine::renderBeats (Voice& v, const VoiceContext& c, double dir, bool
         const double toEnd = dir > 0 ? v.segEnd - v.head : v.head - v.segStart;
         if (toEnd > 0.0)
         {
-            const float fadeIn = (float) std::min (1.0, v.segOffset / 8.0);        // a few samples: keeps the attack
+            const float fadeIn = (float) std::min (1.0, v.segOffset / (v.multiSeg ? 8.0 : (double) v.fadeInLen));   // keeps the attack
             // Fade out before the end only if the audio would run out before the groove moves on and
             // nothing takes over (no stretcher free, or the slice is too short to stretch).
             const bool runsOut = (rd > tlRate * 1.000001 || ! v.nextContiguous) && ! v.bodyOn;
-            const float fadeOut = runsOut ? std::clamp ((float) toEnd / c.fadeLen, 0.f, 1.f) : 1.f;
+            const float fadeOut = runsOut ? std::clamp ((float) toEnd / std::max (c.fadeLen, v.fadeOutLen), 0.f, 1.f) : 1.f;
             segGain = std::min (fadeIn, fadeOut);
             dL = readSample (sample->left, v.head) * segGain;
             dR = readSample (sample->right, v.head) * segGain;
@@ -601,6 +601,14 @@ void SliceEngine::renderBeats (Voice& v, const VoiceContext& c, double dir, bool
     float bL = 0.f, bR = 0.f;
     if (v.slot >= 0 && (v.bodyOn || v.bodyFading))
         pullBody (v, c, dir, remainingOut, bL, bR);
+
+    // A pad's own fade-out lands at the end of its slot, whatever the tempo.
+    if (! v.multiSeg && v.fadeOutLen > 0.f && v.seg >= 0)
+    {
+        const float g = std::clamp ((float) remainingOut / v.fadeOutLen, 0.f, 1.f);
+        bL *= g; bR *= g;
+        if (v.bodyOn) { dL *= g; dR *= g; }
+    }
 
     if (v.bodyOn)
     {
@@ -713,9 +721,21 @@ void SliceEngine::renderTonal (Voice& v, const VoiceContext& c, double dir, bool
         v.display = heard;
         if (! loopNow && (dir > 0 ? heard >= v.regionEnd : heard < v.regionStart))
             finished = true;
+
+        // pad fades, by where the heard audio is in the slice
+        float target = 1.f;
+        if (! loopNow && ! v.multiSeg)
+        {
+            const double fromStart = dir > 0 ? heard - v.regionStart : v.regionEnd - heard;
+            const double toEnd = dir > 0 ? v.regionEnd - heard : heard - v.regionStart;
+            const double fo = std::max ((double) c.fadeLen, (double) v.fadeOutLen);
+            target = (float) std::clamp (std::min (toEnd / fo, v.fadeInLen > 8.f ? fromStart / v.fadeInLen : 1.0), 0.0, 1.0);
+        }
+        v.tonalEdgeStep = (target - v.tonalEdge) / (float) tonalBlock;
     }
-    L = slot.outL[(size_t) v.fifoPos];
-    R = slot.outR[(size_t) v.fifoPos];
+    v.tonalEdge = std::clamp (v.tonalEdge + v.tonalEdgeStep, 0.f, 1.f);
+    L = slot.outL[(size_t) v.fifoPos] * v.tonalEdge;
+    R = slot.outR[(size_t) v.fifoPos] * v.tonalEdge;
     ++v.fifoPos;
 }
 
@@ -826,10 +846,12 @@ void SliceEngine::startVoice (int key, int note, float velocity, int level, bool
     v.slice = slice;
     const float sens = std::clamp (params.velSens, 0.f, 1.f);
     v.velocity = (1.f - sens) + sens * vel;
-    v.regionStart = std::min (sl.start * len, len - 16.0);
-    double end = (params.full ? slices->regionEnd : sl.end) * len;
+    v.regionStart = std::clamp (sl.start * len + pd.startMs * 0.001 * sr, 0.0, len - 16.0);
+    double end = params.full ? slices->regionEnd * len : sl.end * len + pd.endMs * 0.001 * sr;
     end += pd.tailMs * 0.001 * sr;
     v.regionEnd = std::clamp (end, v.regionStart + 16.0, len);
+    v.fadeInLen = std::max (8.f, msToSamples (pd.fadeInMs));
+    v.fadeOutLen = pd.fadeOutMs > 0.f ? msToSamples (pd.fadeOutMs) : 0.f;
     v.reverse = pd.reverse;
     v.oneShot = forceOneShot || pd.playMode == playOneShot;
     v.loop = params.loop || (pd.loop && pd.playMode == playNoteOn);
@@ -1063,7 +1085,8 @@ void SliceEngine::process (float* left, float* right, int n, const Transport& t)
                         }
                     }
                     const double dStart = v.head - v.regionStart, dEnd = v.regionEnd - v.head;
-                    edge = std::clamp ((float) std::min (dStart, dEnd) / edgeSamples, 0.f, 1.f);
+                    edge = std::clamp (std::min ((float) dStart / std::max (edgeSamples, v.fadeInLen),
+                                                 (float) dEnd / std::max (edgeSamples, v.fadeOutLen)), 0.f, 1.f);
                     if (v.preview && loopNow && (v.plays > 0 || dEnd < dStart))
                         edge = 1.f;
                     v.head += headRate * dir;

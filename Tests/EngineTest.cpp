@@ -476,6 +476,27 @@ int main()
         CHECK (std::abs (o[(size_t) (sr * 0.6)] - 0.10f) < 0.01f, "tail adds audio past the slice end");
         r.pads[0] = PadSettings();
 
+        // Pad Start / End move just this pad's slice; fades smooth its edges
+        r.pads[2].startMs = 250.f; r.pads[2].endMs = 200.f;      // slice 2 = 1.0-1.5 s -> 1.25-1.7 s
+        o = r.play (2, 0.6);
+        CHECK (std::abs (o[(size_t) (sr * 0.1)] - 0.15f) < 0.01f && std::abs (o[(size_t) (sr * 0.35)] - 0.20f) < 0.01f
+               && peakIn (o, 0.47, 0.6) < 1e-3f, "Pad Start/End move the slice (later start, later end)");
+        r.pads[2] = PadSettings();
+        r.pads[2].endMs = -250.f;                                   // end 250 ms early
+        o = r.play (2, 0.4);
+        CHECK (std::abs (o[(size_t) (sr * 0.2)] - 0.15f) < 0.01f && peakIn (o, 0.26, 0.4) < 1e-3f, "Pad End cuts before the next hit");
+        r.pads[2] = PadSettings();
+        r.pads[3].fadeOutMs = 100.f;
+        o = r.play (3, 0.55);
+        CHECK (std::abs (o[(size_t) (sr * 0.3)] - 0.20f) < 0.01f && o[(size_t) (sr * 0.45)] < 0.12f && o[(size_t) (sr * 0.45)] > 0.06f,
+               "Pad Fade Out ramps down over the last 100 ms");
+        r.pads[3] = PadSettings();
+        r.pads[3].fadeInMs = 100.f;
+        o = r.play (3, 0.3);
+        CHECK (o[(size_t) (sr * 0.05)] < 0.12f && o[(size_t) (sr * 0.05)] > 0.08f && std::abs (o[(size_t) (sr * 0.2)] - 0.20f) < 0.01f,
+               "Pad Fade In ramps up over the first 100 ms");
+        r.pads[3] = PadSettings();
+
         // loop with repeats
         r.pads[4].loop = true; r.pads[4].repeats = 2;
         o = r.play (4, 1.3);

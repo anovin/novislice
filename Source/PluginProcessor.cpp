@@ -449,6 +449,34 @@ juce::String NoviSliceProcessor::getSampleName() const  { const juce::ScopedLock
 bool NoviSliceProcessor::hasSample() const              { const juce::ScopedLock l (sampleInfoLock); return original.getNumSamples() > 0; }
 std::vector<float> NoviSliceProcessor::getPeaks() const { const juce::ScopedLock l (sampleInfoLock); return peaks; }
 
+std::vector<float> NoviSliceProcessor::getPeaksRange (double a, double b, int columns) const
+{
+    const juce::ScopedLock l (sampleInfoLock);
+    std::vector<float> out ((size_t) juce::jmax (1, columns) * 2, 0.f);
+    const int len = original.getNumSamples();
+    if (len == 0 || b <= a) return out;
+    for (int c = 0; c < columns; ++c)
+    {
+        const int i0 = juce::jlimit (0, len - 1, (int) ((a + (b - a) * c / columns) * len));
+        const int i1 = juce::jlimit (i0 + 1, len, (int) ((a + (b - a) * (c + 1) / columns) * len));
+        float lo = 0.f, hi = 0.f;
+        for (int i = i0; i < i1; ++i)
+        {
+            const float v = 0.5f * (original.getSample (0, i) + original.getSample (1, i));
+            lo = juce::jmin (lo, v);
+            hi = juce::jmax (hi, v);
+        }
+        out[(size_t) c * 2] = lo;
+        out[(size_t) c * 2 + 1] = hi;
+    }
+    return out;
+}
+
+double NoviSliceProcessor::snapFraction (double f) const
+{
+    return apvts.getRawParameterValue ("zeroSnap")->load() > 0.5f ? chopper.snapToZero (f) : f;
+}
+
 double NoviSliceProcessor::getSampleSeconds() const
 {
     const juce::ScopedLock l (sampleInfoLock);
@@ -915,6 +943,10 @@ void NoviSliceProcessor::getStateInformation (juce::MemoryBlock& destData)
         t.setProperty ("pan", p.pan, nullptr);
         t.setProperty ("cutoff", p.cutoffHz, nullptr);
         t.setProperty ("tail", p.tailMs, nullptr);
+        t.setProperty ("start", p.startMs, nullptr);
+        t.setProperty ("end", p.endMs, nullptr);
+        t.setProperty ("fadeIn", p.fadeInMs, nullptr);
+        t.setProperty ("fadeOut", p.fadeOutMs, nullptr);
         t.setProperty ("reverse", p.reverse, nullptr);
         t.setProperty ("mute", p.mute, nullptr);
         t.setProperty ("solo", p.solo, nullptr);
@@ -963,6 +995,10 @@ void NoviSliceProcessor::setStateInformation (const void* data, int sizeInBytes)
         p.pan = t["pan"];
         p.cutoffHz = t.getProperty ("cutoff", 20000.f);
         p.tailMs = t["tail"];
+        p.startMs = t["start"];
+        p.endMs = t["end"];
+        p.fadeInMs = t["fadeIn"];
+        p.fadeOutMs = t["fadeOut"];
         p.reverse = t["reverse"];
         p.mute = t["mute"];
         p.solo = t["solo"];

@@ -53,6 +53,8 @@ Settings for the selected pad (click a pad, or a slice on the screen, to select 
 | Control | What it does |
 |---|---|
 | **TUNE / LEVEL / PAN / CUTOFF / TAIL** | The pad's own pitch (±24 semitones, fine steps), volume, pan, low-pass filter, and extra audio after the slice ends so chops don't stop abruptly. Tune never changes the timing. |
+| **START / END** | Pad Start and Pad End (MPC-style): move just this pad's start and end, up to 250 ms either way, without touching the markers. Use END to stop a chop before a click or the start of the next hit. On this page the screen zooms in on the pad's slice, and you can drag its **S** and **E** handles. Click a value to type it exactly (for example -12.5). |
+| **FADE IN / FADE OUT** | Smooth the pad's edges. FADE OUT at its default (X-FADE) uses the X-FADE knob on the SOUND page; raise it (5–30 ms is typical) to get rid of clicks at the end of a chop. **RESET S/E** puts start, end and fades back to normal. |
 | **REVERSE / LOOP / MUTE / SOLO** | Play the slice backwards, loop it while held, mute the pad, or solo it (only soloed pads sound). |
 | **PLAY MODE** | *NOTE ON* plays while held, *ONE SHOT* plays the whole slice from one hit, *NOTE OFF* plays when you let go. |
 | **MUTE GROUP** | Pads in the same group (1–8) cut each other off, like open and closed hi-hats. |

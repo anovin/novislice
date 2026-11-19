@@ -43,6 +43,8 @@ public:
     bool hasSample() const;
     double getSampleSeconds() const;
     std::vector<float> getPeaks() const;          // interleaved min/max, numPeakColumns pairs
+    std::vector<float> getPeaksRange (double fromFraction, double toFraction, int columns) const;   // for zooming in
+    double snapFraction (double fraction) const;  // to the nearest zero crossing when 0 SNAP is on
 
     // ---- slices (message thread) ----
     novi::SliceMap getSliceMap() const;

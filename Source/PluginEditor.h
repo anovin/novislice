@@ -56,12 +56,25 @@ public:
     bool editing = false;                 // CHOP page: markers can be moved
     int  selectedSlice = -1;
     std::function<void (int slice)> onSliceClicked;
+    int  zoomPad = -1;                    // PAD EDIT page: zoom in on this pad's slice
+    std::function<void()> onPadEdited;
 
 private:
+    struct ZoomInfo { bool valid = false; int slice = -1; double s0 = 0, s1 = 0, start = 0, end = 0, tailEnd = 0, k = 0; novi::PadSettings pad; };
+    ZoomInfo zoomInfo() const;
+    void paintZoom (juce::Graphics& g, juce::Rectangle<float> wave, juce::Rectangle<float> numbers, const ZoomInfo& z);
+    float zoomX (double f) const;
+    double zoomFraction (float x) const;
+    double viewA = 0.0, viewB = 1.0;
+    std::vector<float> zoomPeaks;
+    double peaksA = -1.0, peaksB = -1.0;
+    int peaksVersion = -1;
+    bool zoomDragging = false;
+
     juce::Rectangle<float> waveArea() const;
     double toFraction (float x) const;
     float toX (double fraction) const;
-    enum class Grab { none, sliceStart, sliceEnd, trimStart, trimEnd };
+    enum class Grab { none, sliceStart, sliceEnd, trimStart, trimEnd, padStart, padEnd };
     Grab hitTest (juce::Point<float> p, int& slice) const;
 
     NoviSliceProcessor& proc;
@@ -216,6 +229,7 @@ private:
 
     // pad edit controls
     juce::Slider *padTune = nullptr, *padLevel = nullptr, *padPan = nullptr, *padCutoff = nullptr, *padTail = nullptr;
+    juce::Slider *padStart = nullptr, *padEnd = nullptr, *padFadeIn = nullptr, *padFadeOut = nullptr;
     juce::ComboBox *padPlayMode = nullptr, *padMuteGroup = nullptr, *padRepeats = nullptr, *padMotion = nullptr, *padCycles = nullptr;
     juce::TextButton *padReverse = nullptr, *padLoop = nullptr, *padMute = nullptr, *padSolo = nullptr;
     bool loadingPad = false;

@@ -278,8 +278,129 @@ LcdDisplay::Grab LcdDisplay::hitTest (juce::Point<float> p, int& slice) const
     return g;
 }
 
+LcdDisplay::ZoomInfo LcdDisplay::zoomInfo() const
+{
+    ZoomInfo z;
+    if (zoomPad < 0 || map.count == 0 || ! proc.hasSample())
+        return z;
+    z.slice = proc.getSliceForKey (zoomPad);
+    if (z.slice < 0 || z.slice >= map.count)
+        return z;
+    const double seconds = proc.getSampleSeconds();
+    if (seconds <= 0.0) return z;
+    z.k = 0.001 / seconds;                       // fraction of the sample per millisecond
+    z.pad = proc.getPad (zoomPad);
+    z.s0 = map.s[(size_t) z.slice].start;
+    z.s1 = map.s[(size_t) z.slice].end;
+    z.start = juce::jlimit (0.0, 1.0, z.s0 + z.pad.startMs * z.k);
+    z.end = juce::jlimit (z.start, 1.0, z.s1 + z.pad.endMs * z.k);
+    z.tailEnd = juce::jmin (1.0, z.end + z.pad.tailMs * z.k);
+    z.valid = true;
+    return z;
+}
+
+float LcdDisplay::zoomX (double f) const
+{
+    const auto w = waveArea();
+    return w.getX() + (float) ((f - viewA) / juce::jmax (1e-9, viewB - viewA)) * w.getWidth();
+}
+
+double LcdDisplay::zoomFraction (float x) const
+{
+    const auto w = waveArea();
+    return juce::jlimit (0.0, 1.0, viewA + (double) (x - w.getX()) / w.getWidth() * (viewB - viewA));
+}
+
+void LcdDisplay::paintZoom (juce::Graphics& g, juce::Rectangle<float> wave, juce::Rectangle<float> numbers, const ZoomInfo& z)
+{
+    if (! zoomDragging)
+    {
+        const double lo = juce::jmin (z.start, z.s0), hi = juce::jmax (z.tailEnd, z.s1);
+        const double margin = juce::jmax ((hi - lo) * 0.2, 40.0 * z.k);
+        viewA = juce::jmax (0.0, lo - margin);
+        viewB = juce::jmin (1.0, hi + margin);
+    }
+    const int cols = juce::jmax (8, (int) (wave.getWidth() / 2.f));
+    const int version = proc.sampleVersion.load();
+    if (std::abs (viewA - peaksA) > 1e-12 || std::abs (viewB - peaksB) > 1e-12 || version != peaksVersion || (int) zoomPeaks.size() != cols * 2)
+    {
+        zoomPeaks = proc.getPeaksRange (viewA, viewB, cols);
+        peaksA = viewA; peaksB = viewB; peaksVersion = version;
+    }
+
+    float maxAbs = 0.01f;
+    for (float v : zoomPeaks) maxAbs = juce::jmax (maxAbs, std::abs (v));
+    const float mid = wave.getCentreY(), half = wave.getHeight() * 0.5f;
+    for (int c = 0; c < cols; ++c)
+    {
+        const double f = viewA + (c + 0.5) / cols * (viewB - viewA);
+        if (f >= z.start && f < z.end)          g.setColour (col::lcdInk);
+        else if (f >= z.end && f < z.tailEnd)   g.setColour (col::lcdInk.withAlpha (0.55f));
+        else                                    g.setColour (col::lcdDim.withAlpha (0.5f));
+        const float lo = zoomPeaks[(size_t) c * 2], hi = zoomPeaks[(size_t) c * 2 + 1];
+        const float top = mid - (hi / maxAbs) * half, bottom = mid - (lo / maxAbs) * half;
+        g.fillRect (wave.getX() + c * 2.f, std::floor (top), 1.5f, juce::jmax (1.f, std::ceil (bottom - top)));
+    }
+
+    // the slice's own markers (dotted), and the next slice's start
+    g.setColour (col::lcdInk.withAlpha (0.6f));
+    std::vector<double> marks { z.s0, z.s1 };
+    for (double m : marks)
+    {
+        const float x = zoomX (m);
+        if (x < wave.getX() || x > wave.getRight()) continue;
+        for (float yy = wave.getY() - 4.f; yy < wave.getBottom() + 4.f; yy += 4.f)
+            g.fillRect (std::round (x), yy, 1.f, 2.f);
+    }
+
+    // fades
+    const double fadeIn = z.pad.fadeInMs * z.k;
+    const double fadeOut = (z.pad.fadeOutMs > 0.f ? z.pad.fadeOutMs : proc.apvts.getRawParameterValue ("xfade")->load()) * z.k;
+    g.setColour (col::lcdInk);
+    if (fadeIn > 0.0)
+        g.drawLine (zoomX (z.start), wave.getBottom(), zoomX (z.start + fadeIn), wave.getY(), 1.5f);
+    const double endPoint = z.tailEnd > z.end ? z.tailEnd : z.end;
+    g.drawLine (zoomX (endPoint - fadeOut), wave.getY(), zoomX (endPoint), wave.getBottom(), 1.5f);
+
+    // S / E handles
+    for (int which = 0; which < 2; ++which)
+    {
+        const float x = zoomX (which == 0 ? z.start : z.end);
+        g.setColour (col::lcdInk);
+        g.fillRect (x - 1.f, wave.getY() - 4.f, 2.f, wave.getHeight() + 8.f);
+        auto tab = Rectangle<float> (which == 0 ? x : x - 14.f, wave.getY() - 4.f, 14.f, 14.f);
+        g.fillRect (tab);
+        g.setColour (col::lcdTop);
+        g.setFont (fonts.mono (12.f));
+        g.drawText (which == 0 ? "S" : "E", tab, juce::Justification::centred, false);
+    }
+
+    // playhead
+    const float ph = proc.engine.uiPlayhead.load();
+    if (ph >= 0.f && ph >= viewA && ph <= viewB)
+    {
+        g.setColour (col::lcdInk);
+        g.fillRect (zoomX (ph) - 1.f, wave.getY() - 4.f, 2.f, wave.getHeight() + 8.f);
+    }
+
+    // times under the handles
+    const double seconds = proc.getSampleSeconds();
+    g.setColour (col::lcdInk);
+    g.setFont (fonts.mono (12.f));
+    g.drawText (juce::String (z.start * seconds, 3) + " S", Rectangle<float> (zoomX (z.start), numbers.getY(), 90.f, numbers.getHeight()),
+                juce::Justification::centredLeft, false);
+    g.drawText (juce::String (z.end * seconds, 3) + " S", Rectangle<float> (zoomX (z.end) - 90.f, numbers.getY(), 90.f, numbers.getHeight()),
+                juce::Justification::centredRight, false);
+}
+
 void LcdDisplay::mouseMove (const juce::MouseEvent& e)
 {
+    if (const auto z = zoomInfo(); z.valid)
+    {
+        const bool near = std::abs (e.position.x - zoomX (z.start)) < 8.f || std::abs (e.position.x - zoomX (z.end)) < 8.f;
+        setMouseCursor (near ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::NormalCursor);
+        return;
+    }
     int s;
     const auto g = hitTest (e.position, s);
     setMouseCursor (g == Grab::none ? juce::MouseCursor::NormalCursor : juce::MouseCursor::LeftRightResizeCursor);
@@ -289,6 +410,20 @@ void LcdDisplay::mouseDown (const juce::MouseEvent& e)
 {
     if (! proc.hasSample())
         return;
+    if (const auto z = zoomInfo(); z.valid)
+    {
+        const float ds = std::abs (e.position.x - zoomX (z.start)), de = std::abs (e.position.x - zoomX (z.end));
+        if (juce::jmin (ds, de) < 8.f)
+        {
+            grab = ds <= de ? Grab::padStart : Grab::padEnd;
+            zoomDragging = true;
+            return;
+        }
+        auditionNote = novi::noteForSliceKey (zoomPad);        // click: hear the pad as it is now
+        if (auditionNote >= 0)
+            proc.keyboardState.noteOn (1, auditionNote, 0.9f);
+        return;
+    }
     int s;
     grab = hitTest (e.position, grabSlice);
     if (grab != Grab::none)
@@ -319,6 +454,22 @@ void LcdDisplay::mouseDown (const juce::MouseEvent& e)
 void LcdDisplay::mouseDrag (const juce::MouseEvent& e)
 {
     if (grab == Grab::none) return;
+    if (grab == Grab::padStart || grab == Grab::padEnd)
+    {
+        const auto z = zoomInfo();
+        if (! z.valid) return;
+        const double f = proc.snapFraction (zoomFraction (e.position.x));
+        auto pd = z.pad;
+        const double minLen = 5.0 * z.k;
+        if (grab == Grab::padStart)
+            pd.startMs = (float) juce::jlimit (-250.0, 250.0, (juce::jmin (f, z.end - minLen) - z.s0) / z.k);
+        else
+            pd.endMs = (float) juce::jlimit (-250.0, 250.0, (juce::jmax (f, z.start + minLen) - z.s1) / z.k);
+        proc.setPad (zoomPad, pd);
+        if (onPadEdited) onPadEdited();
+        repaint();
+        return;
+    }
     const double fr = toFraction (e.position.x);
     auto f = [this] (const char* id) { return (double) proc.apvts.getRawParameterValue (id)->load(); };
     switch (grab)
@@ -335,6 +486,7 @@ void LcdDisplay::mouseDrag (const juce::MouseEvent& e)
 void LcdDisplay::mouseUp (const juce::MouseEvent&)
 {
     grab = Grab::none;
+    zoomDragging = false;
     if (auditionNote >= 0)
         proc.keyboardState.noteOff (1, auditionNote, 0.f);
     auditionNote = -1;
@@ -342,6 +494,7 @@ void LcdDisplay::mouseUp (const juce::MouseEvent&)
 
 void LcdDisplay::mouseDoubleClick (const juce::MouseEvent& e)
 {
+    if (zoomInfo().valid) return;
     if (! editing || ! proc.hasSample() || ! waveArea().expanded (0.f, 6.f).contains (e.position))
         return;
     if (auditionNote >= 0) { proc.keyboardState.noteOff (1, auditionNote, 0.f); auditionNote = -1; }
@@ -392,6 +545,14 @@ void LcdDisplay::paint (juce::Graphics& g)
         left << "  " << message;
     else if (name.isNotEmpty())
         left << "  " << name.toUpperCase();
+    const auto zoom = zoomInfo();
+    if (zoom.valid && ! showMessage)
+    {
+        auto ms = [] (float v) { return std::abs (v) < 0.05f ? juce::String ("0") : (v > 0 ? "+" : "") + juce::String (v, 1); };
+        left = "PAD " + juce::String (zoomPad + 1).paddedLeft ('0', 2) + "  SLICE " + juce::String (zoom.slice + 1).paddedLeft ('0', 2)
+             + "  START " + ms (zoom.pad.startMs) + "  END " + ms (zoom.pad.endMs) + " MS  LEN "
+             + juce::String ((zoom.end - zoom.start) * proc.getSampleSeconds(), 3) + " S";
+    }
     auto flagsArea = status.removeFromRight (208.f);
     g.drawText (left, status, juce::Justification::centredLeft, true);
 
@@ -419,7 +580,9 @@ void LcdDisplay::paint (juce::Graphics& g)
     flag ("16L", on ("sixteen"));
 
     const bool loaded = ! peaks.empty() && proc.hasSample();
-    if (! loaded)
+    if (loaded && zoom.valid)
+        paintZoom (g, wave, numbers, zoom);
+    else if (! loaded)
     {
         g.setColour (col::lcdInk);
         g.setFont (fonts.mono (20.f, 0.05f));
@@ -901,6 +1064,7 @@ FacePanel::FacePanel (NoviSliceProcessor& p) : proc (p)
     addAndMakeVisible (lcd);
     addAndMakeVisible (bpmBox);
     lcd.onSliceClicked = [this] (int slice) { selectPad (proc.getKeyForSlice (slice)); };
+    lcd.onPadEdited = [this] { loadPadControls(); };
 
     for (auto* b : { &loadButton, &playButton })
         addAndMakeVisible (*b);
@@ -1020,6 +1184,32 @@ FacePanel::FacePanel (NoviSliceProcessor& p) : proc (p)
                              [] (double v) { return v >= 19950.0 ? juce::String ("OPEN") : v >= 1000.0 ? juce::String (v / 1000.0, 1) + " kHz" : juce::String (juce::roundToInt (v)) + " Hz"; });
     padTail = &addPadKnob ("TAIL", 0.0, 1000.0, 1.0, 150.0, 0.0,
                            [] (double v) { return v < 0.5 ? juce::String ("OFF") : juce::String (juce::roundToInt (v)) + " ms"; });
+    padStart = &addPadKnob ("START", -250.0, 250.0, 0.1, 0.0, 0.0,
+                            [] (double v) { return std::abs (v) < 0.05 ? juce::String ("0 ms") : (v > 0 ? "+" : "") + juce::String (v, 1) + " ms"; });
+    padEnd = &addPadKnob ("END", -250.0, 250.0, 0.1, 0.0, 0.0,
+                          [] (double v) { return std::abs (v) < 0.05 ? juce::String ("0 ms") : (v > 0 ? "+" : "") + juce::String (v, 1) + " ms"; });
+    padFadeIn = &addPadKnob ("FADE IN", 0.0, 200.0, 0.1, 20.0, 0.0,
+                             [] (double v) { return v < 0.05 ? juce::String ("OFF") : juce::String (v, v < 10.0 ? 1 : 0) + " ms"; });
+    padFadeOut = &addPadKnob ("FADE OUT", 0.0, 500.0, 0.1, 40.0, 0.0,
+                              [] (double v) { return v < 0.05 ? juce::String ("X-FADE") : juce::String (v, v < 10.0 ? 1 : 0) + " ms"; });
+    for (auto* k : { padStart, padEnd, padFadeIn, padFadeOut })
+    {
+        k->setMouseDragSensitivity (900);   // fine control; or click the value and type it
+        k->valueFromTextFunction = [] (const juce::String& t) { return t.retainCharacters ("-+0123456789.").getDoubleValue(); };
+        for (auto* child : k->getChildren())
+            if (auto* label = dynamic_cast<juce::Label*> (child))
+            {
+                label->setEditable (true, true, false);
+                label->setInterceptsMouseClicks (true, true);
+            }
+    }
+    addButton ("RESET S/E", pagePad, [this]
+    {
+        auto pd = proc.getPad (selectedPad);
+        pd.startMs = pd.endMs = pd.fadeInMs = pd.fadeOutMs = 0.f;
+        proc.setPad (selectedPad, pd);
+        loadPadControls();
+    });
     padReverse = &addPadToggle ("REVERSE");
     padLoop = &addPadToggle ("LOOP");
     padMute = &addPadToggle ("MUTE");
@@ -1220,6 +1410,11 @@ void FacePanel::loadPadControls()
     padPan->setValue (pd.pan, juce::dontSendNotification);
     padCutoff->setValue (pd.cutoffHz, juce::dontSendNotification);
     padTail->setValue (pd.tailMs, juce::dontSendNotification);
+    padStart->setValue (pd.startMs, juce::dontSendNotification);
+    padEnd->setValue (pd.endMs, juce::dontSendNotification);
+    padFadeIn->setValue (pd.fadeInMs, juce::dontSendNotification);
+    padFadeOut->setValue (pd.fadeOutMs, juce::dontSendNotification);
+    for (auto* k : { padStart, padEnd, padFadeIn, padFadeOut }) k->updateText();
     for (auto* s : { padTune, padLevel, padPan, padCutoff, padTail }) s->updateText();
     padReverse->setToggleState (pd.reverse, juce::dontSendNotification);
     padLoop->setToggleState (pd.loop, juce::dontSendNotification);
@@ -1235,14 +1430,18 @@ void FacePanel::loadPadControls()
 
 void FacePanel::storePadControls()
 {
-    if (loadingPad || padTune == nullptr || padCycles == nullptr)
+    if (loadingPad || padTune == nullptr || padCycles == nullptr || padFadeOut == nullptr)
         return;
-    novi::PadSettings pd;
+    novi::PadSettings pd = proc.getPad (selectedPad);
     pd.tune = (float) padTune->getValue();
     pd.levelDb = (float) padLevel->getValue();
     pd.pan = (float) padPan->getValue();
     pd.cutoffHz = padCutoff->getValue() >= 19950.0 ? 20000.f : (float) padCutoff->getValue();
     pd.tailMs = (float) padTail->getValue();
+    pd.startMs = (float) padStart->getValue();
+    pd.endMs = (float) padEnd->getValue();
+    pd.fadeInMs = (float) padFadeIn->getValue();
+    pd.fadeOutMs = (float) padFadeOut->getValue();
     pd.reverse = padReverse->getToggleState();
     pd.loop = padLoop->getToggleState();
     pd.mute = padMute->getToggleState();
@@ -1352,20 +1551,23 @@ void FacePanel::resized()
     section ("PAD SOUND", 24, r1, 340, rowH, pagePad);
     placeKnob (*padTune, 32, r1 + 26); placeKnob (*padLevel, 96, r1 + 26); placeKnob (*padPan, 160, r1 + 26);
     placeKnob (*padCutoff, 224, r1 + 26); placeKnob (*padTail, 288, r1 + 26);
-    section ("PAD SWITCHES", 372, r1, 356, rowH, pagePad);
-    place (*padReverse, 384, r1 + 30, 76, 36);
-    place (*padLoop, 466, r1 + 30, 76, 36);
-    place (*padMute, 548, r1 + 30, 76, 36);
-    place (*padSolo, 630, r1 + 30, 86, 36);
-    place (*byId["RESET PAD"], 384, r1 + 84, 150, 32);
-    place (*byId["COPY TO ALL"], 542, r1 + 84, 174, 32);
+    section ("START / END", 372, r1, 356, rowH, pagePad);
+    placeKnob (*padStart, 380, r1 + 26); placeKnob (*padEnd, 444, r1 + 26);
+    placeKnob (*padFadeIn, 508, r1 + 26); placeKnob (*padFadeOut, 572, r1 + 26);
+    place (*byId["RESET S/E"], 642, r1 + 52, 78, 30);
     section ("TRIGGER", 24, r2, 340, rowH, pagePad);
     placeLabelled (*padPlayMode, 36, r2 + 26, 116, 28);
     placeLabelled (*padMuteGroup, 160, r2 + 26, 84, 28);
     placeLabelled (*padRepeats, 252, r2 + 26, 100, 28);
-    section ("SLICE MOTION", 372, r2, 356, rowH, pagePad);
-    placeLabelled (*padMotion, 384, r2 + 26, 116, 28);
-    placeLabelled (*padCycles, 508, r2 + 26, 84, 28);
+    section ("SWITCHES / MOTION", 372, r2, 356, rowH, pagePad);
+    place (*padReverse, 384, r2 + 22, 80, 32);
+    place (*padLoop, 470, r2 + 22, 80, 32);
+    place (*padMute, 556, r2 + 22, 76, 32);
+    place (*padSolo, 638, r2 + 22, 80, 32);
+    placeLabelled (*padMotion, 384, r2 + 62, 100, 26);
+    placeLabelled (*padCycles, 490, r2 + 62, 70, 26);
+    place (*byId["RESET PAD"], 568, r2 + 78, 72, 26);
+    place (*byId["COPY TO ALL"], 644, r2 + 78, 76, 26);
 
     // PLAY MODES
     section ("VOICES", 24, r1, 270, rowH, pagePlay);
@@ -1500,6 +1702,8 @@ void FacePanel::paintChassis (juce::Graphics& g)
     hint ("HOLD TO PLAY  -  SHIFT-CLICK TO LATCH  -  KEYS C3-D#4", 752, 470, 320);
     if (page == pageChop)
         hint ("DRAG MARKERS TO MOVE  -  DOUBLE-CLICK TO ADD  -  ALT-CLICK TO DELETE  -  DRAG S / E TO TRIM", 24, 318, 704);
+    else if (page == pagePad)
+        hint ("ZOOMED ON THE SELECTED PAD  -  DRAG S / E TO FINE-TUNE ITS START AND END  -  CLICK TO HEAR IT", 24, 318, 704);
     else
         hint ("CLICK THE SCREEN TO AUDITION  -  DROP A FILE ON IT TO LOAD  -  DOUBLE-CLICK LOOP BPM TO TYPE A TEMPO", 24, 318, 704);
 
@@ -1518,10 +1722,11 @@ void FacePanel::paintChassis (juce::Graphics& g)
         hint ("NOTE OFF: PLAYS WHEN RELEASED", 36, r2 + 100, 320);
         hint ("MUTE GROUP: PADS IN A GROUP CUT EACH OTHER OFF", 36, r2 + 116, 320);
         hint ("REPEATS: HOW MANY TIMES A LOOPED PAD PLAYS", 36, r2 + 132, 320);
-        hint ("NEXT: EACH HIT PLAYS THE NEXT SLICE", 384, r2 + 84, 330);
-        hint ("RANDOM: EACH HIT PLAYS A RANDOM SLICE", 384, r2 + 100, 330);
-        hint ("CYCLES: HOW MANY SLICES IT MOVES THROUGH", 384, r2 + 116, 330);
-        hint ("LOOP NEEDS PLAY MODE = NOTE ON", 384, r1 + 124, 330);
+        hint ("MOTION: EACH HIT PLAYS THE NEXT / A RANDOM SLICE", 384, r2 + 116, 336);
+        hint ("LOOP NEEDS PLAY MODE = NOTE ON", 384, r2 + 132, 336);
+        hint ("CLICK VALUES", 642, r1 + 88, 84);
+        hint ("TO TYPE THEM,", 642, r1 + 104, 84);
+        hint ("OR DRAG S / E", 642, r1 + 120, 84);
     }
     if (page == pagePlay)
     {
@@ -1617,6 +1822,7 @@ void FacePanel::refresh()
         bankA.setToggleState (true, juce::dontSendNotification);
     }
     lcd.selectedSlice = selectedPad < total ? proc.getSliceForKey (selectedPad) : -1;
+    lcd.zoomPad = (page == pagePad && selectedPad < total) ? selectedPad : -1;
 
     const bool sixteen = proc.apvts.getRawParameterValue ("sixteen")->load() > 0.5f;
     const int source = juce::roundToInt (proc.apvts.getRawParameterValue ("sixteenSource")->load()) - 1;

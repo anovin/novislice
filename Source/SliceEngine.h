@@ -69,6 +69,10 @@ struct PadSettings
     float pan = 0.f;          // -1..1
     float cutoffHz = 20000.f; // pad low-pass
     float tailMs = 0.f;       // extra audio past the slice end
+    float startMs = 0.f;      // Pad Start: moves this pad's start, -250..+250 ms
+    float endMs = 0.f;        // Pad End: moves this pad's end, -250..+250 ms
+    float fadeInMs = 0.f;     // 0 = just a few samples (keeps the attack)
+    float fadeOutMs = 0.f;    // 0 = the X-FADE setting
     bool  reverse = false;
     bool  mute = false, solo = false;
     bool  loop = false;       // loop while held (Note On mode)
@@ -81,7 +85,8 @@ struct PadSettings
     bool isDefault() const
     {
         auto zero = [] (float v) { return v > -1e-6f && v < 1e-6f; };
-        return zero (tune) && zero (levelDb) && zero (pan) && cutoffHz >= 20000.f && zero (tailMs) && ! reverse && ! mute
+        return zero (tune) && zero (levelDb) && zero (pan) && cutoffHz >= 20000.f && zero (tailMs) && zero (startMs) && zero (endMs)
+               && zero (fadeInMs) && zero (fadeOutMs) && ! reverse && ! mute
                && ! solo && ! loop && playMode == playNoteOn && muteGroup == 0 && repeats == 0 && motion == motionOff && cycles == 0;
     }
 };
@@ -231,6 +236,8 @@ private:
         double tuneRatio = 1.0;
         float  gainL = 1.f, gainR = 1.f;
         float  decayStep = 0.f, decayGain = 1.f;
+        float  fadeInLen = 8.f, fadeOutLen = 0.f;   // pad fades, in samples (0 = X-FADE)
+        float  tonalEdge = 1.f, tonalEdgeStep = 0.f;
         bool   filtered = false;
         float  fa1 = 0.f, fa2 = 0.f, fa3 = 0.f, fk = 2.f;
         float  f1[2] { 0.f, 0.f }, f2[2] { 0.f, 0.f };

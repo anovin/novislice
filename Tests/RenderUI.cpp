@@ -34,6 +34,12 @@ int main (int argc, char** argv)
         proc.outputPeak = 0.5f;
     }
 
+    if (argc > 5 && juce::String (argv[5]) == "2")
+    {
+        novi::PadSettings pd;
+        pd.startMs = 6.f; pd.endMs = -40.f; pd.fadeOutMs = 30.f; pd.fadeInMs = 2.f;
+        proc.setPad (0, pd);
+    }
     std::unique_ptr<juce::AudioProcessorEditor> ed (proc.createEditor());
     ed->setSize (FacePanel::designW, FacePanel::designH);
     if (argc > 5)

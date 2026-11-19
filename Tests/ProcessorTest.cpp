@@ -68,7 +68,7 @@ int main (int argc, char** argv)
     juce::MessageManager::getInstance()->runDispatchLoopUntil (300);
 
     // pads + state round trip
-    novi::PadSettings pd; pd.tune = 3.5f; pd.mute = true; pd.playMode = novi::playOneShot; pd.motion = novi::motionNext; pd.cycles = 4;
+    novi::PadSettings pd; pd.tune = 3.5f; pd.mute = true; pd.startMs = 4.5f; pd.endMs = -33.f; pd.fadeOutMs = 25.f; pd.playMode = novi::playOneShot; pd.motion = novi::motionNext; pd.cycles = 4;
     proc.setPad (5, pd);
     proc.moveSliceEdge (2, true, proc.getSliceMap().s[2].start + 0.005);
     const int countBefore = proc.getNumSlices();
@@ -79,7 +79,8 @@ int main (int argc, char** argv)
     other.prepareToPlay (48000.0, 512);
     other.setStateInformation (state.getData(), (int) state.getSize());
     const auto op = other.getPad (5);
-    CHECK (std::abs (op.tune - 3.5f) < 1e-6 && op.mute && op.playMode == novi::playOneShot && op.motion == novi::motionNext && op.cycles == 4, "pad settings saved");
+    CHECK (std::abs (op.tune - 3.5f) < 1e-6 && op.mute && op.playMode == novi::playOneShot && op.motion == novi::motionNext && op.cycles == 4
+           && std::abs (op.startMs - 4.5f) < 1e-4f && std::abs (op.endMs + 33.f) < 1e-4f && std::abs (op.fadeOutMs - 25.f) < 1e-4f, "pad settings saved");
     CHECK (other.getNumSlices() == countBefore && other.getChopMode() == novi::chopManual, "manual slices saved");
     CHECK (std::abs (other.getSliceMap().s[2].start - proc.getSliceMap().s[2].start) < 1e-8, "slice positions saved");
 
