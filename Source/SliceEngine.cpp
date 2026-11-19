@@ -383,8 +383,17 @@ void SliceEngine::setupVoiceMode (Voice& v)
             return;
         }
 
-    // BEATS (also the fallback if every stretcher is busy)
+    // BEATS (also the fallback if every stretcher is busy). It borrows a stretcher, if one is free,
+    // to fill each slice's slot after the hit.
     v.mode = modeBeats;
+    v.slot = -1;
+    for (int i = 0; i < (int) stretchers.size(); ++i)
+        if (! stretchers[(size_t) i].used)
+        {
+            stretchers[(size_t) i].used = true;
+            v.slot = i;
+            break;
+        }
     v.timeline = dir > 0 ? v.regionStart : v.regionEnd - 1e-6;
     v.seg = -1;
     v.lastSegGain = 0.f;
@@ -420,7 +429,7 @@ void SliceEngine::jumpToSegment (Voice& v, double dir, const VoiceContext& c, bo
     const int newSeg = segmentAt (v, v.timeline, a, b);
     const double newHead = dir > 0 ? a : b - 1e-6;
 
-    if (newSeg >= 0 && v.seg >= 0 && std::abs (newHead - v.head) < 2.0)
+    if (newSeg >= 0 && v.seg >= 0 && ! v.bodyOn && std::abs (newHead - v.head) < 2.0)
     {
         // The audio simply carries on into the next slice (the tempo matches): no fades at all.
         v.seg = newSeg;
@@ -429,6 +438,16 @@ void SliceEngine::jumpToSegment (Voice& v, double dir, const VoiceContext& c, bo
         v.oldGain = 0.f;
         updateNextContiguous (v, dir);
         return;
+    }
+
+    // A stretched body that was playing fades out underneath the next slice's hit.
+    if (v.bodyOn)
+    {
+        v.bodyOn = false;
+        v.bodyFading = true;
+        v.bodyFadeGain = v.bodyMix;
+        v.bodyFadeStep = std::max (v.bodyFadeGain, 0.001f) / std::max (1.f, c.fadeLen);
+        v.bodyMix = 0.f;
     }
 
     // A loop wrap is a straight splice (a loop cut on the beat runs on seamlessly); any other jump
@@ -465,30 +484,144 @@ void SliceEngine::updateNextContiguous (Voice& v, double dir)
     v.nextContiguous = segmentAt (v, probe, a, b) >= 0 && (dir > 0 ? std::abs (a - edge) < 1.0 : std::abs (b - edge) < 1.0);
 }
 
+float SliceEngine::readBounded (const std::vector<float>& buf, double pos, double a, double b) const
+{
+    if (pos < a || pos >= b)
+        return 0.f;
+    const float g = (float) std::min (std::min (1.0, (pos - a) / 24.0), std::min (1.0, (b - pos) / 48.0));
+    return readSample (buf, pos) * g;
+}
+
+void SliceEngine::startBody (Voice& v, const VoiceContext& c, double dir, double rate, double transpose)
+{
+    auto& slot = stretchers[(size_t) v.slot];
+    auto& st = *slot.stretch;
+    st.setTransposeFactor ((float) transpose);
+    // Prime the stretcher from where the direct audio is now, so the two line up for the crossfade.
+    const int seekLen = std::min ((int) slot.inL.size(), st.outputSeekLength ((float) rate));
+    for (int k = 0; k < seekLen; ++k)
+    {
+        const double pos = v.head + k * dir;
+        slot.inL[(size_t) k] = readBounded (sample->left, pos, v.segStart, v.segEnd);
+        slot.inR[(size_t) k] = readBounded (sample->right, pos, v.segStart, v.segEnd);
+    }
+    float* in[2] = { slot.inL.data(), slot.inR.data() };
+    st.outputSeek (in, seekLen);
+    v.bodyHead = v.head + seekLen * dir;
+    v.bodyRate = rate;
+    v.fifoPos = tonalBlock;
+    v.inputCarry = 0.0;
+    v.bodyOn = true;
+    v.bodyFading = false;
+    v.bodyMix = 0.f;
+    (void) c;
+}
+
+void SliceEngine::pullBody (Voice& v, const VoiceContext& c, double dir, double remainingOut, float& L, float& R)
+{
+    auto& slot = stretchers[(size_t) v.slot];
+    auto& st = *slot.stretch;
+    if (v.fifoPos >= tonalBlock)
+    {
+        if (v.bodyOn)
+        {
+            // Steer the rate so the rest of the slice finishes exactly when its slot does.
+            const double heard = v.bodyHead - dir * (st.inputLatency() + v.bodyRate * st.outputLatency());
+            const double left = dir > 0 ? v.segEnd - heard : heard - v.segStart;
+            if (remainingOut > 256.0)
+                v.bodyRate = std::clamp (left / remainingOut, 0.05, 4.0);
+            st.setTransposeFactor ((float) std::clamp (c.pitchRatio * v.tuneRatio * c.modRate, 0.05, 16.0));
+        }
+        v.inputCarry += tonalBlock * v.bodyRate;
+        const int ni = std::min ((int) v.inputCarry, (int) slot.inL.size());
+        v.inputCarry -= ni;
+        for (int k = 0; k < ni; ++k)
+        {
+            const double pos = v.bodyHead + k * dir;
+            slot.inL[(size_t) k] = readBounded (sample->left, pos, v.segStart, v.segEnd);
+            slot.inR[(size_t) k] = readBounded (sample->right, pos, v.segStart, v.segEnd);
+        }
+        v.bodyHead += ni * dir;
+        float* in[2] = { slot.inL.data(), slot.inR.data() };
+        float* out[2] = { slot.outL.data(), slot.outR.data() };
+        st.process (in, ni, out, tonalBlock);
+        v.fifoPos = 0;
+    }
+    L = slot.outL[(size_t) v.fifoPos];
+    R = slot.outR[(size_t) v.fifoPos];
+    ++v.fifoPos;
+}
+
 void SliceEngine::renderBeats (Voice& v, const VoiceContext& c, double dir, bool loop, float& L, float& R, bool& finished)
 {
     const double tlRate = c.speed * c.modRate;                     // the groove follows the tempo...
-    const double rd = c.pitchRatio * v.tuneRatio * c.modRate;      // ...but the audio itself plays untouched (pitch = varispeed)
+    const double rd = c.pitchRatio * v.tuneRatio * c.modRate;      // ...each hit plays untouched (pitch = varispeed)
+    const double xfade = std::max (32.0, (double) msToSamples (10.f));
 
-    float segGain = 0.f;
-    if (v.seg >= 0)
+    // Output samples until the groove moves on to the next slice
+    double remainingOut = 0.0;
+    if (v.seg >= 0 && tlRate > 1e-6)
+        remainingOut = (dir > 0 ? v.segEnd - v.timeline : v.timeline - v.segStart) / tlRate;
+
+    // After the attack, hand the rest of the slice to the spectral stretcher so it exactly fills its slot:
+    // no gaps when slower, nothing chopped when faster, and the hit itself is never processed.
+    if (v.slot >= 0 && v.seg >= 0 && ! v.bodyOn && ! v.bodyFading && tlRate > 1e-4
+        && std::abs (rd - tlRate) > tlRate * 0.002)
+    {
+        const double attackSrc = msToSamples (25.f) * std::max (rd, 0.05);
+        const double remainingSrc = dir > 0 ? v.segEnd - v.head : v.head - v.segStart;
+        if (v.segOffset >= attackSrc && remainingOut > xfade * 2.0 && remainingSrc > 256.0)
+            startBody (v, c, dir, std::clamp (remainingSrc / remainingOut, 0.05, 4.0), std::clamp (rd, 0.05, 16.0));
+    }
+
+    // direct (untouched) audio
+    float segGain = 0.f, dL = 0.f, dR = 0.f;
+    if (v.seg >= 0 && v.bodyMix < 1.f)
     {
         const double toEnd = dir > 0 ? v.segEnd - v.head : v.head - v.segStart;
         if (toEnd > 0.0)
         {
-            const float fadeIn = (float) std::min (1.0, v.segOffset / 8.0);        // a few samples: keeps the hit's attack
-            // Fade out before the end only if the audio would run out before the groove moves on
-            // (slower tempo or pitched up); otherwise the next slice takes over at the boundary.
-            const bool runsOut = rd > tlRate * 1.000001 || ! v.nextContiguous;
+            const float fadeIn = (float) std::min (1.0, v.segOffset / 8.0);        // a few samples: keeps the attack
+            // Fade out before the end only if the audio would run out before the groove moves on and
+            // nothing takes over (no stretcher free, or the slice is too short to stretch).
+            const bool runsOut = (rd > tlRate * 1.000001 || ! v.nextContiguous) && ! v.bodyOn;
             const float fadeOut = runsOut ? std::clamp ((float) toEnd / c.fadeLen, 0.f, 1.f) : 1.f;
             segGain = std::min (fadeIn, fadeOut);
-            L += readSample (sample->left, v.head) * segGain;
-            R += readSample (sample->right, v.head) * segGain;
-            v.head += rd * dir;
-            v.segOffset += rd;
+            dL = readSample (sample->left, v.head) * segGain;
+            dR = readSample (sample->right, v.head) * segGain;
         }
     }
-    v.lastSegGain = segGain;
+    if (v.seg >= 0)
+    {
+        v.head += rd * dir;
+        v.segOffset += rd;
+    }
+
+    // stretched body (and the tail of the previous slice's body fading out)
+    float bL = 0.f, bR = 0.f;
+    if (v.slot >= 0 && (v.bodyOn || v.bodyFading))
+        pullBody (v, c, dir, remainingOut, bL, bR);
+
+    if (v.bodyOn)
+    {
+        v.bodyMix = std::min (1.f, v.bodyMix + (float) (1.0 / xfade));
+        L += dL * (1.f - v.bodyMix) + bL * v.bodyMix;
+        R += dR * (1.f - v.bodyMix) + bR * v.bodyMix;
+        v.lastSegGain = segGain * (1.f - v.bodyMix);
+    }
+    else
+    {
+        L += dL;
+        R += dR;
+        v.lastSegGain = segGain;
+        if (v.bodyFading)
+        {
+            L += bL * v.bodyFadeGain;
+            R += bR * v.bodyFadeGain;
+            v.bodyFadeGain -= v.bodyFadeStep;
+            if (v.bodyFadeGain <= 0.f) { v.bodyFading = false; v.bodyFadeGain = 0.f; }
+        }
+    }
 
     if (v.oldGain > 0.f)
     {

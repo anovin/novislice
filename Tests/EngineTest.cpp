@@ -242,7 +242,8 @@ int main()
         r.t.bpm = 60.0;
         auto o = r.play (0, 1.2);
         CHECK (std::abs (estimateHz (o, 4800, 19200) - 440.0) < 2.0, "BEATS: sync at half the tempo keeps the tone exactly");
-        CHECK (peakIn (o, 0.40, 0.45) > 0.45f && peakIn (o, 0.55, 1.2) < 1e-4f, "BEATS: the slice plays untouched, then waits for its slot");
+        CHECK (peakIn (o, 0.40, 0.45) > 0.3f && peakIn (o, 0.85, 0.95) > 0.3f && peakIn (o, 1.06, 1.2) < 0.02f,
+               "BEATS: slower, the slice is stretched to fill its whole 1 s slot (no gap)");
         r.t.bpm = 180.0;
         o = r.play (0, 0.5);
         CHECK (std::abs (estimateHz (o, 2400, 12000) - 440.0) < 2.0, "BEATS: sync faster keeps the tone");
@@ -258,14 +259,18 @@ int main()
         r.p.sync = false; r.apply();
         o = r.play (0, 0.7);
         CHECK (std::abs (estimateHz (o, 2400, 9600) - 880.0) < 20.0, "pitch +12 without sync");
-        // pitch keeps the groove: PLAY a pitched step loop and each step still starts on time
-        Rig pg (makeStepSample());
-        pg.p.pitchSemis = 12.f; pg.apply();
+        // pitch keeps the groove: PLAY a pitched drum loop and every hit still lands on time
+        std::vector<double> hitTimes { 0.0, 0.5, 1.0, 1.5 };
+        Rig pg (makeHits (hitTimes, 2.0));
+        pg.p.bars = 1; pg.p.slicesPerBar = 4; pg.p.pitchSemis = 12.f; pg.apply();
         pg.e.startPreview();
-        o = render (pg.e, (int) (sr * 1.3), pg.t);
+        o = render (pg.e, (int) (sr * 1.8), pg.t);
         pg.e.stopPreview();
-        CHECK (std::abs (o[(size_t) (sr * 0.6)] - 0.10f) < 0.01f && std::abs (o[(size_t) (sr * 1.1)] - 0.15f) < 0.01f,
-               "pitched up, every step still starts on time (tempo kept)");
+        bool onTime = true;
+        for (int k = 1; k < 4; ++k)
+            onTime = onTime && peakIn (o, hitTimes[(size_t) k], hitTimes[(size_t) k] + 0.01) > 0.4f
+                            && peakIn (o, hitTimes[(size_t) k] - 0.03, hitTimes[(size_t) k] - 0.005) < 0.2f;
+        CHECK (onTime, "pitched up, every hit still lands on time (tempo kept)");
         r.p.pitchSemis = 0.f; r.apply();
 
         // TONAL: the spectral stretcher really stretches, at the same pitch
@@ -365,6 +370,29 @@ int main()
         }
         CHECK (onTime, "BEATS: hits land on the new tempo's grid");
         CHECK (sharp, "BEATS: hits play untouched (no stretching artefacts)");
+    }
+
+    // --- BEATS slowed down a few BPM: a sustained loop plays on without gaps or skips
+    {
+        Rig g (makeSine (440.0, 8.0));
+        g.p.sync = true; g.p.bars = 4; g.p.slicesPerBar = 4; g.apply();   // 120 BPM loop
+        g.t.bpm = 114.0;
+        g.e.startPreview();
+        auto o = render (g.e, (int) (sr * 6.0), g.t);
+        g.e.stopPreview();
+        float worst = 1.f;
+        for (double t0 = 0.05; t0 < 5.9; t0 += 0.01)
+            worst = std::min (worst, peakIn (o, t0, t0 + 0.01));
+        CHECK (worst > 0.35f, "BEATS slower: no gaps anywhere (every 10 ms has sound)");
+        CHECK (std::abs (estimateHz (o, 4800, (int) (sr * 5.5)) - 440.0) < 2.0, "BEATS slower: pitch stays put");
+        g.t.bpm = 128.0;
+        g.e.startPreview();
+        o = render (g.e, (int) (sr * 6.0), g.t);
+        g.e.stopPreview();
+        worst = 1.f;
+        for (double t0 = 0.05; t0 < 5.9; t0 += 0.01)
+            worst = std::min (worst, peakIn (o, t0, t0 + 0.01));
+        CHECK (worst > 0.35f, "BEATS faster: no dropouts either");
     }
 
     // --- BEATS at the loop's own tempo is bit-for-bit the original (no seams at slice boundaries)

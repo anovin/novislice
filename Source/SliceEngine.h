@@ -215,6 +215,10 @@ private:
         double oldHead = 0.0;
         float  oldGain = 0.f, oldStep = 0.f, lastSegGain = 0.f;
         bool   nextContiguous = false;
+        // BEATS: the rest of a slice after its hit, stretched to fill the slot
+        bool   bodyOn = false, bodyFading = false;
+        double bodyHead = 0.0, bodyRate = 1.0;
+        float  bodyMix = 0.f, bodyFadeGain = 0.f, bodyFadeStep = 0.f;
         // TONAL
         int    slot = -1;
         int    fifoPos = 0;
@@ -246,6 +250,9 @@ private:
     void  jumpToSegment (Voice& v, double dir, const VoiceContext& c, bool loopWrap);
     void  updateNextContiguous (Voice& v, double dir);
     float readTonalInput (const Voice& v, const std::vector<float>& buf, double pos, bool loop) const;
+    float readBounded (const std::vector<float>& buf, double pos, double a, double b) const;
+    void  startBody (Voice& v, const VoiceContext& c, double dir, double rate, double transpose);
+    void  pullBody (Voice& v, const VoiceContext& c, double dir, double remainingOut, float& L, float& R);
     void  freeVoice (Voice& v);
     void  trigger (int key, int note, float velocity, int level, bool fromRepeat);
     void  startVoice (int key, int note, float velocity, int level, bool forceOneShot);
@@ -280,7 +287,7 @@ private:
         std::vector<float> inL, inR, outL, outR;
         bool used = false;
     };
-    static constexpr int numStretchers = 8;
+    static constexpr int numStretchers = 12;
     static constexpr int tonalBlock = 64;
     std::vector<StretchSlot> stretchers;
     double lastSpeed = 1.0, lastModRate = 1.0;
