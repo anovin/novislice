@@ -652,7 +652,12 @@ void SliceEngine::process (float* left, float* right, int n, const Transport& t)
                 }
 
                 const double dStart = v.head - v.regionStart, dEnd = v.regionEnd - v.head;
-                const float edge = std::clamp ((float) std::min (dStart, dEnd) / edgeSamples, 0.f, 1.f);
+                // PLAY follows the LOOP switch live, and loops seamlessly (no fade at the loop point
+                // once it has started; only the very first start fades in).
+                const bool loopNow = v.preview ? params.loop : v.loop;
+                float edge = std::clamp ((float) std::min (dStart, dEnd) / edgeSamples, 0.f, 1.f);
+                if (v.preview && loopNow && (v.plays > 0 || dEnd < dStart))
+                    edge = 1.f;
 
                 if (v.releasing)
                 {
@@ -693,7 +698,7 @@ void SliceEngine::process (float* left, float* right, int n, const Transport& t)
                 if (pastEnd)
                 {
                     ++v.plays;
-                    const bool again = v.loop && (v.repeats <= 0 || v.plays < v.repeats);
+                    const bool again = loopNow && (v.repeats <= 0 || v.plays < v.repeats);
                     if (again)
                     {
                         const double shift = dir > 0 ? -regionLen : regionLen;

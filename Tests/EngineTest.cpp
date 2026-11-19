@@ -290,6 +290,19 @@ int main()
         o = render (r.e, 4800, r.t);
         CHECK (std::abs (o[2400] - 0.45f) < 0.01f, "PLAY starts at the trim start");
         r.e.stopPreview();
+        // PLAY + LOOP keeps going round, and turning LOOP off lets it finish
+        Rig lp (makeStepSample());
+        lp.p.loop = true; lp.apply();
+        lp.e.startPreview();
+        o = render (lp.e, (int) (sr * 10.0), lp.t);
+        CHECK (std::abs (o[(size_t) (sr * 9.25)] - 0.15f) < 0.01f && lp.e.uiPreviewing.load(), "PLAY with LOOP goes back to the start");
+        float dip = 1.f;
+        for (int i = (int) (sr * 7.99); i < (int) (sr * 8.01); ++i) dip = std::min (dip, o[(size_t) i]);
+        CHECK (dip > 0.04f, "no gap at the loop point");
+        lp.p.loop = false; lp.apply();
+        o = render (lp.e, (int) (sr * 7.5), lp.t);
+        CHECK (peakIn (o, 7.1, 7.5) < 1e-4f && ! lp.e.uiPreviewing.load(), "turning LOOP off lets it finish and stop");
+
         // with sync, the whole loop follows the host tempo: 8 s at 120 -> 4 s at 240
         Rig s2 (makeStepSample());
         s2.p.sync = true; s2.apply();
