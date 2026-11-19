@@ -17,6 +17,7 @@ The sample is saved inside your FL project, so projects still open if the file m
 
 | Control | What it does |
 |---|---|
+| **PLAY** | Plays the loaded sample from start to finish (between the trim points), through Sync, Pitch and the effects. It lights while playing; click again to stop. The screen shows the time. |
 | **LOOP BPM** | The tempo of the sample. Drag it up or down, click the arrows (Shift for 0.1 steps), or double-click and type it. With Sync on, the loop plays at FL Studio's tempo. Clicking the up arrow while it shows AUTO locks in the guessed tempo. Go below 40, or type nothing, to return to AUTO. |
 | **BARS / PER BAR** | The BPM grid: how many bars to slice (1–8 or 16) and how many slices per bar (1–8), up to 32 slices. With a Loop BPM set, bars are counted at that tempo, and anything past them shows as NOT SLICED. On AUTO, BARS also sets the guessed tempo. Slices 17–32 are on pad bank **B**. |
 | **TRIPLET** | Switches to a triplet grid: 2, 4 or 8 slices per bar become 3, 6 or 12. |

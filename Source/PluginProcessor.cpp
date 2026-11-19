@@ -223,6 +223,11 @@ void NoviSliceProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
         ord[(size_t) k] = order[(size_t) k].load();
     engine.setOrder (ord);
 
+    if (const int req = previewRequest.exchange (0); req == 1)
+        engine.startPreview();
+    else if (req == 2)
+        engine.stopPreview();
+
     novi::Transport t;
     if (auto* ph = getPlayHead())
         if (auto pos = ph->getPosition())

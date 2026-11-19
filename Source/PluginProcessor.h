@@ -85,6 +85,10 @@ public:
 
     void readParams (novi::EngineParams& p) const;
 
+    // PLAY button
+    void requestPreview (bool start) { previewRequest.store (start ? 1 : 2); }
+    std::atomic<int> previewRequest { 0 };
+
     static constexpr int numPeakColumns = 1200;
     std::atomic<int> sampleVersion { 0 };         // bumps when the audio changes
     std::atomic<int> sliceVersion { 0 };          // bumps when the slices change

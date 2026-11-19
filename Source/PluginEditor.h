@@ -200,6 +200,8 @@ private:
     LcdDisplay lcd { proc, fonts };
     BpmBox bpmBox { proc, fonts };
     juce::TooltipWindow tooltips { this, 600 };
+    juce::TextButton playButton { "PLAY" };
+    juce::uint32 playPressedAt = 0;
     juce::TextButton loadButton { "LOAD" }, shuffleButton { "SHUFFLE" }, resetButton { "RESET" };
     juce::TextButton bankA { "A" }, bankB { "B" };
     std::array<juce::TextButton, numPages> pageTabs;

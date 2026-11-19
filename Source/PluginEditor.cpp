@@ -382,7 +382,13 @@ void LcdDisplay::paint (juce::Graphics& g)
     static const char* modeTags[] = { "GRID", "REG", "TRANS", "MAN" };
     left << "  " << juce::String (total).paddedLeft ('0', 2) << " " << modeTags[juce::jlimit (0, 3, proc.getChopMode())];
     const bool showMessage = message.isNotEmpty() && juce::Time::getMillisecondCounter() < messageUntil;
-    if (showMessage)
+    if (proc.engine.uiPreviewing.load() && ! showMessage)
+    {
+        const float ph = proc.engine.uiPlayhead.load();
+        left << "  PLAYING " << juce::String (juce::jmax (0.f, ph) * proc.getSampleSeconds(), 2) << " / "
+             << juce::String (proc.getSampleSeconds(), 2) << " S";
+    }
+    else if (showMessage)
         left << "  " << message;
     else if (name.isNotEmpty())
         left << "  " << name.toUpperCase();
@@ -896,8 +902,16 @@ FacePanel::FacePanel (NoviSliceProcessor& p) : proc (p)
     addAndMakeVisible (bpmBox);
     lcd.onSliceClicked = [this] (int slice) { selectPad (proc.getKeyForSlice (slice)); };
 
-    for (auto* b : { &loadButton, &shuffleButton, &resetButton })
+    for (auto* b : { &loadButton, &shuffleButton, &resetButton, &playButton })
         addAndMakeVisible (*b);
+    playButton.setClickingTogglesState (true);
+    playButton.setTooltip ("Play the loaded sample from start to finish (between the trim points). Click again to stop.");
+    playButton.onClick = [this]
+    {
+        if (! proc.hasSample()) { playButton.setToggleState (false, juce::dontSendNotification); lcd.flash ("LOAD A LOOP FIRST"); return; }
+        playPressedAt = juce::Time::getMillisecondCounter();
+        proc.requestPreview (playButton.getToggleState());
+    };
     loadButton.onClick = [this] { loadViaChooser(); };
     shuffleButton.onClick = [this] { proc.shuffleOrder(); };
     resetButton.onClick = [this] { proc.resetOrder(); };
@@ -1271,14 +1285,15 @@ void FacePanel::resized()
         const int y = 344, h = 34;
         auto next = [&] (juce::Component& c, int w, int gap = 8) { c.setBounds (x, y, w, h); x += w + gap; };
         next (loadButton, 52);
+        next (playButton, 56);
         bpmBox.setBounds (x, y + 4, 70, 26); x += 70 + 8;
         byId["bars"]->setBounds (x, y + 4, 48, 26); x += 48 + 6;
         byId["slices"]->setBounds (x, y + 4, 48, 26); x += 48 + 10;
-        next (*byId["triplet"], 66);
-        next (*byId["full"], 58);
-        next (*byId["loop"], 58);
-        next (*byId["sync"], 58, 12);
-        next (shuffleButton, 66, 6);
+        next (*byId["triplet"], 60);
+        next (*byId["full"], 50);
+        next (*byId["loop"], 50);
+        next (*byId["sync"], 52, 12);
+        next (shuffleButton, 60, 6);
         resetButton.setBounds (x, y, 728 - x, h);
     }
 
@@ -1601,6 +1616,10 @@ void FacePanel::refresh()
         pads[(size_t) i]->setState (key, loaded && (levelPad ? source < total : key < total),
                                     key == activeKey, ! levelPad && key == selectedPad, levelPad ? i : -1);
     }
+    // PLAY lights while the sample is playing (give the audio thread a moment after a click)
+    if (juce::Time::getMillisecondCounter() - playPressedAt > 250)
+        playButton.setToggleState (proc.engine.uiPreviewing.load(), juce::dontSendNotification);
+
     const auto mask = proc.engine.uiPerfMask.load();
     for (int i = 0; i < novi::numPerfFx; ++i)
         perfButtons[(size_t) i]->setLit ((mask >> i) & 1u);

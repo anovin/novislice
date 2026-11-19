@@ -126,6 +126,8 @@ SliceMap Chopper::compute (const ChopSettings& s, const std::vector<Slice>& manu
             map.s[(size_t) i] = { a / L, std::max (a + 32.0, b) / L };
         }
         map.regionEnd = trimE / L;
+        map.trimStart = trimS / L;
+        map.trimEnd = trimE / L;
         return map;
     }
 
@@ -178,6 +180,8 @@ SliceMap Chopper::compute (const ChopSettings& s, const std::vector<Slice>& manu
         map.s[(size_t) i] = { a / L, std::max (a + 16.0, b) / L };
     }
     map.regionEnd = regionEnd / L;
+    map.trimStart = trimS / L;
+    map.trimEnd = trimE / L;
     return map;
 }
 

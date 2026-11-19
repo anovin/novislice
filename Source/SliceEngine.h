@@ -45,6 +45,7 @@ struct SliceMap
 {
     int count = 0;
     double regionEnd = 1.0;               // end of the chopped part (FULL plays up to here)
+    double trimStart = 0.0, trimEnd = 1.0; // the part of the sample in use (PLAY plays this)
     std::array<Slice, 32> s {};
 };
 
@@ -156,6 +157,11 @@ public:
     void noteOff (int note);
     void allNotesOff();
 
+    // PLAY button: the whole (trimmed) sample from start to finish, through Sync, Pitch and the effects.
+    void startPreview();
+    void stopPreview();
+    std::atomic<bool> uiPreviewing { false };
+
     // Renders (replaces) n samples into left/right.
     void process (float* left, float* right, int n, const Transport& t);
 
@@ -186,6 +192,7 @@ private:
         bool   granular = false;     // reading through the grain engine (pitch, key lock, texture)
         float  releaseStep = 0.f;
         int    uiKey = -1;           // pad shown lit (differs from key in 16 Levels)
+        bool   preview = false;      // started by the PLAY button
         bool   reverse = false;      // pad reverse
         bool   oneShot = false;      // ignores note off
         bool   loop = false;

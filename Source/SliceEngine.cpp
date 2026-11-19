@@ -269,6 +269,59 @@ void SliceEngine::allNotesOff()
     perf.fill (false);
 }
 
+void SliceEngine::startPreview()
+{
+    if (sample == nullptr || sample->length() < 16)
+        return;
+    const float chokeSamples = std::max (msToSamples (2.f), msToSamples (params.xfadeMs));
+    for (auto& v : voices)
+        if (v.active && ! v.releasing)
+        {
+            v.releasing = true;
+            v.releaseStep = std::max (v.env, 0.001f) / chokeSamples;
+        }
+
+    Voice* target = &voices[0];
+    for (auto& v : voices)
+        if (! v.active) { target = &v; break; }
+
+    const double len = sample->length();
+    const double a = slices != nullptr ? slices->trimStart : 0.0;
+    const double b = slices != nullptr ? slices->trimEnd : 1.0;
+
+    Voice& v = *target;
+    v = Voice();
+    v.active = true;
+    v.preview = true;
+    v.key = -1;
+    v.uiKey = -1;
+    v.note = -2;            // never released by a note off
+    v.slice = -1;
+    v.oneShot = true;
+    v.velocity = 1.f;
+    v.regionStart = std::clamp (a * len, 0.0, len - 16.0);
+    v.regionEnd = std::clamp (b * len, v.regionStart + 16.0, len);
+    v.head = perf[fxReverse] ? v.regionEnd - 1.0 : v.regionStart;
+    v.env = 1.f;
+    v.age = ++voiceCounter;
+    const double grain = std::max (256.0, (double) msToSamples (params.grainMs));
+    v.grainAnchor[0] = v.grainAnchor[1] = v.head;
+    v.grainAge[0] = 0.0;
+    v.grainAge[1] = grain * 0.5;
+    uiPreviewing = true;
+}
+
+void SliceEngine::stopPreview()
+{
+    const float relSamples = msToSamples (10.f);
+    for (auto& v : voices)
+        if (v.active && v.preview && ! v.releasing)
+        {
+            v.releasing = true;
+            v.releaseStep = std::max (v.env, 0.001f) / relSamples;
+        }
+}
+
 void SliceEngine::trigger (int key, int note, float velocity, int level, bool)
 {
     if (key < 0 || key >= maxSlices)
@@ -810,6 +863,10 @@ void SliceEngine::process (float* left, float* right, int n, const Transport& t)
     }
 
     // UI state
+    bool previewing = false;
+    for (auto& v : voices)
+        previewing = previewing || (v.active && v.preview && ! v.releasing);
+    uiPreviewing = previewing;
     if (lead != nullptr && sample != nullptr && sample->length() > 0)
     {
         uiActiveSlice = lead->slice;

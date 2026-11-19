@@ -269,6 +269,36 @@ int main()
         CHECK (peakIn (o, 0.58, 0.68) < 1e-4f, "set Loop BPM syncs to the host tempo");
     }
 
+    // --- PLAY button: whole sample, start to finish ---------------------------------
+    {
+        Rig r (makeStepSample());
+        r.e.startPreview();
+        auto o = render (r.e, (int) (sr * 8.2), r.t);
+        CHECK (std::abs (o[(size_t) (sr * 0.25)] - 0.05f) < 0.01f && std::abs (o[(size_t) (sr * 7.75)] - 0.80f) < 0.01f, "PLAY runs through the whole sample");
+        CHECK (peakIn (o, 8.05, 8.2) < 1e-4f && ! r.e.uiPreviewing.load(), "...and stops at the end");
+        r.e.startPreview();
+        render (r.e, 4800, r.t);
+        CHECK (r.e.uiPreviewing.load(), "UI sees PLAY running");
+        r.e.noteOff (noteForSliceKey (0));
+        render (r.e, 4800, r.t);
+        CHECK (r.e.uiPreviewing.load(), "a note off doesn't stop PLAY");
+        r.e.stopPreview();
+        o = render (r.e, 4800, r.t);
+        CHECK (peakIn (o, 0.05, 0.1) < 1e-4f && ! r.e.uiPreviewing.load(), "PLAY stops when clicked again");
+        r.chop.trimStart = 0.5; r.apply();
+        r.e.startPreview();
+        o = render (r.e, 4800, r.t);
+        CHECK (std::abs (o[2400] - 0.45f) < 0.01f, "PLAY starts at the trim start");
+        r.e.stopPreview();
+        // with sync, the whole loop follows the host tempo: 8 s at 120 -> 4 s at 240
+        Rig s2 (makeStepSample());
+        s2.p.sync = true; s2.apply();
+        s2.t.bpm = 240.0;
+        s2.e.startPreview();
+        o = render (s2.e, (int) (sr * 4.3), s2.t);
+        CHECK (peakIn (o, 3.6, 3.9) > 0.5f && peakIn (o, 4.1, 4.3) < 1e-3f, "PLAY with Sync plays the loop in FL's tempo");
+    }
+
     // --- roll -------------------------------------------------------------------------
     {
         Rig r (makeSine (440.0, 8.0));
