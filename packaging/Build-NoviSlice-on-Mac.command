@@ -31,7 +31,11 @@ fi
 echo "cmake: $CMAKE ($("$CMAKE" --version | head -1))"
 
 echo "STATUS: configuring"
-"$CMAKE" -B build -DCMAKE_BUILD_TYPE=Release || { echo "STATUS: failed configure"; exit 4; }
+JUCE_ARG=""
+for j in "$ROOT/../NoviTape/build/_deps/juce-src" "$ROOT/../NoviChords/build/_deps/juce-src"; do
+  [ -f "$j/CMakeLists.txt" ] && JUCE_ARG="-DNOVISLICE_JUCE_DIR=$j" && echo "Using JUCE from $j" && break
+done
+"$CMAKE" -B build -DCMAKE_BUILD_TYPE=Release $JUCE_ARG || { echo "STATUS: failed configure"; exit 4; }
 
 echo "STATUS: compiling"
 "$CMAKE" --build build --config Release --target NoviSlice_VST3 NoviSlice_AU EngineTest -j "$(sysctl -n hw.ncpu)" || { echo "STATUS: failed build"; exit 5; }
