@@ -100,7 +100,7 @@ public:
     novi::SliceEngine engine;
 
     static const juce::StringArray barsChoices, slicesChoices, lfoChoices, modeChoices, delayChoices,
-                                   chopChoices, polyChoices, repeatChoices, sixteenChoices;
+                                   chopChoices, polyChoices, repeatChoices, sixteenChoices, stretchChoices;
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();

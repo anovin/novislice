@@ -4,7 +4,10 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <vector>
+
+namespace signalsmith { namespace stretch { template<typename Sample, class RandomEngine> struct SignalsmithStretch; } }
 
 namespace novi
 {
@@ -50,6 +53,11 @@ struct SliceMap
 };
 
 enum PlayMode { playNoteOn = 0, playOneShot, playNoteOff };
+// How SYNC and pitch are done:
+//   BEATS - each slice plays untouched (pitch = varispeed, like an MPC); only the timing between slices follows the
+//           tempo, so drum hits stay sharp (the ReCycle / REX approach)
+//   TONAL - a spectral (phase-vocoder) stretcher, Signalsmith Stretch, for melodic material
+enum StretchMode { stretchBeats = 0, stretchTonal };
 enum SliceMotion { motionOff = 0, motionNext, motionRandom };
 enum SixteenType { sixteenVelocity = 0, sixteenTune, sixteenFilter, sixteenDecay };
 
@@ -117,6 +125,8 @@ struct EngineParams
     float releaseMs = 0.f;
     float outGainDb = 0.f;
 
+    int   stretchMode = stretchBeats;
+
     // MPC-style play modes
     bool  poly = false;        // pads overlap (mute groups still cut) instead of cutting each other off
     bool  fullLevel = false;   // ignore velocity
@@ -141,6 +151,7 @@ class SliceEngine
 {
 public:
     SliceEngine();
+    ~SliceEngine();
 
     void prepare (double sampleRate, int maxBlockSize);
     void reset();
@@ -193,6 +204,21 @@ private:
         float  releaseStep = 0.f;
         int    uiKey = -1;           // pad shown lit (differs from key in 16 Levels)
         bool   preview = false;      // started by the PLAY button
+        int    mode = 0;             // modeBeats, modeTonal, modeTexture
+        double display = 0.0;        // position shown on the screen
+        // BEATS: a timeline that follows the tempo, and a read head that plays each segment untouched
+        bool   multiSeg = false;     // walks through several slices (PLAY, FULL)
+        double timeline = 0.0;
+        int    seg = -1;
+        double segStart = 0.0, segEnd = 0.0;
+        double segOffset = 0.0;      // samples read in the current segment
+        double oldHead = 0.0;
+        float  oldGain = 0.f, oldStep = 0.f, lastSegGain = 0.f;
+        bool   nextContiguous = false;
+        // TONAL
+        int    slot = -1;
+        int    fifoPos = 0;
+        double inputCarry = 0.0;
         bool   reverse = false;      // pad reverse
         bool   oneShot = false;      // ignores note off
         bool   loop = false;
@@ -211,6 +237,16 @@ private:
     };
 
     float readSample (const std::vector<float>& buf, double pos) const;
+    struct VoiceContext { double speed = 1.0, modRate = 1.0, pitchRatio = 1.0; float fadeLen = 16.f; };
+    enum VoiceMode { modeBeats = 0, modeTonal, modeTexture };
+    void  setupVoiceMode (Voice& v);
+    void  renderBeats (Voice& v, const VoiceContext& c, double dir, bool loop, float& L, float& R, bool& finished);
+    void  renderTonal (Voice& v, const VoiceContext& c, double dir, bool loop, float& L, float& R, bool& finished);
+    int   segmentAt (const Voice& v, double pos, double& a, double& b) const;
+    void  jumpToSegment (Voice& v, double dir, const VoiceContext& c, bool loopWrap);
+    void  updateNextContiguous (Voice& v, double dir);
+    float readTonalInput (const Voice& v, const std::vector<float>& buf, double pos, bool loop) const;
+    void  freeVoice (Voice& v);
     void  trigger (int key, int note, float velocity, int level, bool fromRepeat);
     void  startVoice (int key, int note, float velocity, int level, bool forceOneShot);
     const PadSettings& pad (int key) const;
@@ -235,6 +271,20 @@ private:
     bool repeatSynced = false;
 
     static constexpr int numVoices = 16;
+
+    // Spectral stretchers for TONAL voices (allocated in prepare, shared by the voices)
+    using Stretcher = signalsmith::stretch::SignalsmithStretch<float, void>;
+    struct StretchSlot
+    {
+        std::unique_ptr<Stretcher> stretch;
+        std::vector<float> inL, inR, outL, outR;
+        bool used = false;
+    };
+    static constexpr int numStretchers = 8;
+    static constexpr int tonalBlock = 64;
+    std::vector<StretchSlot> stretchers;
+    double lastSpeed = 1.0, lastModRate = 1.0;
+
     std::array<Voice, numVoices> voices;
     uint64_t voiceCounter = 0;
 

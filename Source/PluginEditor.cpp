@@ -902,8 +902,11 @@ FacePanel::FacePanel (NoviSliceProcessor& p) : proc (p)
     addAndMakeVisible (bpmBox);
     lcd.onSliceClicked = [this] (int slice) { selectPad (proc.getKeyForSlice (slice)); };
 
-    for (auto* b : { &loadButton, &shuffleButton, &resetButton, &playButton })
+    for (auto* b : { &loadButton, &playButton })
         addAndMakeVisible (*b);
+    resetButton.setButtonText ("RESET ORDER");
+    addToPage (shuffleButton, pagePlay);
+    addToPage (resetButton, pagePlay);
     playButton.setClickingTogglesState (true);
     playButton.setTooltip ("Play the loaded sample from start to finish (between the trim points). Click again to stop.");
     playButton.onClick = [this]
@@ -945,6 +948,8 @@ FacePanel::FacePanel (NoviSliceProcessor& p) : proc (p)
     addToggle ("full", "FULL", -1);
     addToggle ("loop", "LOOP", -1);
     addToggle ("sync", "SYNC", -1);
+    addChoice ("stretch", {}, NoviSliceProcessor::stretchChoices, -1).setTooltip ("BEATS: slices play untouched and only their timing follows FL's tempo (best for drums). "
+                                 "TONAL: a spectral stretcher that keeps everything smooth (best for chords, vocals, melodic loops).");
 
     // ---- SOUND ----
     addKnob ("texAmount", "AMOUNT", pageSound);
@@ -1285,7 +1290,7 @@ void FacePanel::resized()
         const int y = 344, h = 34;
         auto next = [&] (juce::Component& c, int w, int gap = 8) { c.setBounds (x, y, w, h); x += w + gap; };
         next (loadButton, 52);
-        next (playButton, 56);
+        next (playButton, 54);
         bpmBox.setBounds (x, y + 4, 70, 26); x += 70 + 8;
         byId["bars"]->setBounds (x, y + 4, 48, 26); x += 48 + 6;
         byId["slices"]->setBounds (x, y + 4, 48, 26); x += 48 + 10;
@@ -1293,8 +1298,7 @@ void FacePanel::resized()
         next (*byId["full"], 50);
         next (*byId["loop"], 50);
         next (*byId["sync"], 52, 12);
-        next (shuffleButton, 60, 6);
-        resetButton.setBounds (x, y, 728 - x, h);
+        byId["stretch"]->setBounds (x, y + 4, 728 - x, 26);
     }
 
     for (int i = 0; i < numPages; ++i)
@@ -1375,9 +1379,11 @@ void FacePanel::resized()
     place (*byId["sixteen"], 36, r2 + 42, 100, 36);
     placeLabelled (*byId["sixteenType"], 148, r2 + 26, 116, 28);
     place (*byId["USE SELECTED PAD"], 276, r2 + 42, 188, 36);
-    section ("PAD MUTE", 484, r2, 244, rowH, pagePlay);
-    place (*byId["CLEAR MUTES"], 496, r2 + 42, 108, 36);
-    place (*byId["CLEAR SOLOS"], 610, r2 + 42, 108, 36);
+    section ("PADS", 484, r2, 244, rowH, pagePlay);
+    place (*byId["CLEAR MUTES"], 496, r2 + 26, 108, 34);
+    place (*byId["CLEAR SOLOS"], 610, r2 + 26, 108, 34);
+    place (shuffleButton, 496, r2 + 68, 108, 34);
+    place (resetButton, 610, r2 + 68, 108, 34);
 
     // pads
     sections.push_back ({ "PADS", { 744, 74, 336, 372 }, -1 });
@@ -1456,7 +1462,7 @@ void FacePanel::paintChassis (juce::Graphics& g)
     g.drawText ("LOOP BPM", bpmBox.getBounds().translated (0, 28).withHeight (12), juce::Justification::centred, false);
     g.drawText ("BARS", byId["bars"]->getBounds().translated (0, 28).withHeight (12), juce::Justification::centred, false);
     g.drawText ("PER BAR", byId["slices"]->getBounds().translated (0, 28).withHeight (12), juce::Justification::centred, false);
-    g.drawText ("SLICE ORDER", shuffleButton.getBounds().getUnion (resetButton.getBounds()).translated (0, 38).withHeight (12), juce::Justification::centred, false);
+    g.drawText ("STRETCH", byId["stretch"]->getBounds().translated (0, 28).withHeight (12), juce::Justification::centred, false);
     g.drawText ("PLAYBACK", byId["triplet"]->getBounds().getUnion (byId["sync"]->getBounds()).translated (0, 38).withHeight (12),
                 juce::Justification::centred, false);
 
@@ -1526,7 +1532,8 @@ void FacePanel::paintChassis (juce::Graphics& g)
         hint ("NOT TRIPLETS", 596, r1 + 106, 130);
         hint ("ONE PAD SPREAD OVER PADS 1-16 AT RISING LEVELS", 36, r2 + 96, 430);
         hint ("TUNE: PAD 9 = ORIGINAL PITCH", 36, r2 + 112, 430);
-        hint ("MUTE / SOLO PADS ON THE PAD EDIT PAGE", 496, r2 + 96, 230);
+        hint ("SHUFFLE: PADS PLAY SLICES IN A", 496, r2 + 112, 230);
+        hint ("RANDOM ORDER (MUTE/SOLO: PAD EDIT)", 496, r2 + 128, 230);
     }
 
     if (page == pageSound)

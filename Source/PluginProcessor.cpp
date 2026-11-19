@@ -10,6 +10,7 @@ const juce::StringArray NoviSliceProcessor::slicesChoices { "1", "2", "4", "8" }
 const juce::StringArray NoviSliceProcessor::lfoChoices    { "OFF", "1/1", "1/2", "1/4", "1/8", "1/16" };
 const juce::StringArray NoviSliceProcessor::modeChoices   { "LP", "HP", "BP" };
 const juce::StringArray NoviSliceProcessor::delayChoices  { "1/16", "1/8", "1/8D", "1/4", "1/4D", "1/2" };
+const juce::StringArray NoviSliceProcessor::stretchChoices { "BEATS", "TONAL" };
 const juce::StringArray NoviSliceProcessor::chopChoices   { "BPM GRID", "REGIONS", "TRANSIENT", "MANUAL" };
 const juce::StringArray NoviSliceProcessor::polyChoices   { "MONO", "POLY" };
 const juce::StringArray NoviSliceProcessor::repeatChoices { "1/4", "1/8", "1/16", "1/32", "1/8T", "1/16T", "1/32T" };
@@ -63,6 +64,7 @@ APVTS::ParameterLayout NoviSliceProcessor::createLayout()
     toggle ("triplet", "Triplet", false);
     toggle ("full", "Full", false);
     toggle ("sync", "Sync", true);
+    choice ("stretch", "Stretch mode", stretchChoices, 0);
     toggle ("keylock", "Key lock", false);
     toggle ("loop", "Loop", false);
 
@@ -167,6 +169,7 @@ void NoviSliceProcessor::readParams (novi::EngineParams& p) const
     p.triplet = f ("triplet") > 0.5f;
     p.full = f ("full") > 0.5f;
     p.sync = f ("sync") > 0.5f;
+    p.stretchMode = i ("stretch");
     p.keyLock = f ("keylock") > 0.5f;
     p.loop = f ("loop") > 0.5f;
     p.textureAmount = f ("texAmount") / 100.f;

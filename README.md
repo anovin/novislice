@@ -23,8 +23,8 @@ The sample is saved inside your FL project, so projects still open if the file m
 | **TRIPLET** | Switches to a triplet grid: 2, 4 or 8 slices per bar become 3, 6 or 12. |
 | **FULL** | Keeps playing past the end of the slice to the end of the loop. |
 | **LOOP** | Loops the slice while the key is held. |
-| **SYNC** | Plays the loop at FL Studio's tempo, using the Loop BPM, without changing its pitch: an 80 BPM loop in a 95 BPM session plays faster but keeps the same tone. Turn Sync off to always play the loop at its own speed. (Tip: if stretched drums sound doubled, lower *Grain* on the SOUND page.) |
-| **SHUFFLE / RESET** | Shuffles which slice each key plays, or puts them back in order. Pads show the slice they play. |
+| **SYNC** | Plays the loop at FL Studio's tempo, using the Loop BPM, without changing its tone: an 80 BPM loop in a 95 BPM session keeps up with FL. How it gets there is set by STRETCH. Turn Sync off to always play the loop at its own speed. |
+| **STRETCH** | **BEATS** (default, for drums): every slice plays untouched and only the timing between slices follows FL's tempo, like ReCycle/REX files or MPC chops, so drum hits stay perfectly sharp. Faster tempos trim each slice; slower ones leave a little space after it. Pitch works like an MPC (varispeed), but the groove never changes speed. **TONAL** (for chords, vocals, melodic loops): a spectral stretcher (Signalsmith Stretch) that changes speed and pitch smoothly and independently. It sounds best within about 0.75× to 1.5× of the loop's tempo. |
 | Click the screen | Auditions the slice you click and selects its pad. |
 
 By default playback is mono: a new slice cuts off the one before it, with a short crossfade. Switch to POLY on the PLAY MODES page to let pads overlap.
@@ -71,10 +71,11 @@ Pads show small tags for their settings: **M** mute, **S** solo, **1** one shot,
 | **NOTE REPEAT / RATE / SWING** | Hold a pad to retrigger it at 1/4 to 1/32 or triplets, in time with FL Studio. Swing (50–75%, MPC-style) works on the straight rates. |
 | **16 LEVELS / TYPE** | Spreads one pad over pads 1–16 at rising *VELOCITY*, *TUNE* (pad 9 is the original pitch), *FILTER* or *DECAY*. Turning it on uses the selected pad; **USE SELECTED PAD** changes it. |
 | **CLEAR MUTES / CLEAR SOLOS** | Unmute or unsolo every pad. |
+| **SHUFFLE / RESET ORDER** | Shuffles which slice each key plays, or puts them back in order. Pads show the slice they play. |
 
 ## Sound page
 
-- **Texture:** *Amount* scatters the grains for a smeared, granular sound. *Grain* sets the grain size used when Sync stretches the loop, for the Pitch knob, and for Texture (smaller suits drums). *Vinyl* adds crackle and hiss while slices play.
+- **Texture:** *Amount* turns on a granular effect that scatters little grains of the slice for a smeared, lo-fi sound (it replaces the STRETCH engine while it's above 0). *Grain* sets the grain size for it. *Vinyl* adds crackle and hiss while slices play.
 - **Play:** *Pitch* (±24 semitones) changes the pitch but never the tempo, so slices stay in time. *Glide* smooths pitch changes, and *X-Fade* sets the fade at slice edges and between slices.
 - **Filter:** LP, HP or BP with resonance. An LFO synced to the tempo (1/1 to 1/16) can move the cutoff.
 - **Crush:** bit depth and sample-rate reduction.
@@ -119,5 +120,7 @@ cmake --build build --target NoviSlice_VST3 NoviSlice_AU
 ```
 
 The engine has a standalone test: `cmake --build build --target EngineTest && ./build/EngineTest`.
+
+Time-stretching in TONAL mode uses [Signalsmith Stretch](https://github.com/Signalsmith-Audio/signalsmith-stretch) and Signalsmith Linear (MIT License, in `ThirdParty/` with their licence files).
 
 Built with JUCE 8 (free for personal use under its licence terms). The fonts (Barlow Condensed and Share Tech Mono) are under the SIL Open Font License; their licence files are in `Resources/fonts`.

@@ -61,6 +61,13 @@ target_sources(NoviSlice PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp)
 
+# Signalsmith Stretch (MIT) for the TONAL stretch mode; Accelerate makes its FFTs fast on the Mac.
+target_include_directories(NoviSlice PRIVATE ThirdParty)
+if(APPLE)
+    target_compile_definitions(NoviSlice PRIVATE SIGNALSMITH_USE_ACCELERATE=1)
+    target_link_libraries(NoviSlice PRIVATE "-framework Accelerate")
+endif()
+
 target_compile_definitions(NoviSlice PUBLIC
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
@@ -84,6 +91,7 @@ target_link_libraries(NoviSlice
 
 # Engine unit test (no JUCE needed): cmake --build build --target EngineTest && ./build/EngineTest
 add_executable(EngineTest Tests/EngineTest.cpp Source/SliceEngine.cpp Source/Chopper.cpp)
+target_include_directories(EngineTest PRIVATE ThirdParty)
 
 # Renders the editor to a PNG for checking the layout: -DNOVISLICE_SCREENSHOT=ON
 if(NOVISLICE_SCREENSHOT)
@@ -92,6 +100,7 @@ if(NOVISLICE_SCREENSHOT)
     target_compile_definitions(RenderUI PRIVATE
         JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_USE_MP3AUDIOFORMAT=1
         JucePlugin_Name="NoviSlice" JUCE_STANDALONE_APPLICATION=1 JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_include_directories(RenderUI PRIVATE ThirdParty)
     target_link_libraries(RenderUI PRIVATE NoviSliceAssets juce::juce_audio_utils juce::juce_audio_formats
         juce::juce_recommended_config_flags)
 
@@ -100,6 +109,7 @@ if(NOVISLICE_SCREENSHOT)
     target_compile_definitions(ProcessorTest PRIVATE
         JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_USE_MP3AUDIOFORMAT=1
         JucePlugin_Name="NoviSlice" JUCE_STANDALONE_APPLICATION=1 JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_include_directories(ProcessorTest PRIVATE ThirdParty)
     target_link_libraries(ProcessorTest PRIVATE NoviSliceAssets juce::juce_audio_utils juce::juce_audio_formats
         juce::juce_recommended_config_flags)
 endif()

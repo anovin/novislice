@@ -241,25 +241,51 @@ int main()
         r.p.sync = true; r.apply();
         r.t.bpm = 60.0;
         auto o = r.play (0, 1.2);
-        CHECK (std::abs (estimateHz (o, 4800, 19200) - 440.0) < 12.0, "sync at half the tempo keeps the tone");
-        CHECK (peakIn (o, 0.85, 0.95) > 0.2f && peakIn (o, 1.05, 1.2) < 0.05f, "...and the slice stretches to 1 s");
+        CHECK (std::abs (estimateHz (o, 4800, 19200) - 440.0) < 2.0, "BEATS: sync at half the tempo keeps the tone exactly");
+        CHECK (peakIn (o, 0.40, 0.45) > 0.45f && peakIn (o, 0.55, 1.2) < 1e-4f, "BEATS: the slice plays untouched, then waits for its slot");
         r.t.bpm = 180.0;
         o = r.play (0, 0.5);
-        CHECK (std::abs (estimateHz (o, 2400, 12000) - 440.0) < 15.0, "sync faster keeps the tone");
-        CHECK (peakIn (o, 0.36, 0.45) < 0.05f, "...and the slice shortens to 1/3 s");
+        CHECK (std::abs (estimateHz (o, 2400, 12000) - 440.0) < 2.0, "BEATS: sync faster keeps the tone");
+        CHECK (peakIn (o, 0.25, 0.32) > 0.45f && peakIn (o, 0.345, 0.45) < 1e-4f, "BEATS: the slice is cut at its 1/3 s slot");
         r.t.bpm = 120.0;
         r.p.pitchSemis = 12.f; r.apply();
         o = r.play (0, 0.5);
-        CHECK (std::abs (estimateHz (o, 4800, 19200) - 880.0) < 20.0, "+12 at the loop's own tempo");
+        CHECK (std::abs (estimateHz (o, 2400, 9600) - 880.0) < 20.0, "BEATS: +12 at the loop's own tempo (varispeed, like an MPC)");
         r.t.bpm = 60.0;
         o = r.play (0, 0.5);
-        CHECK (std::abs (estimateHz (o, 4800, 19200) - 880.0) < 20.0, "+12 while synced slower is still +12");
+        CHECK (std::abs (estimateHz (o, 2400, 9600) - 880.0) < 20.0, "+12 while synced slower is still +12");
         r.t.bpm = 120.0;
         r.p.sync = false; r.apply();
         o = r.play (0, 0.7);
-        CHECK (std::abs (estimateHz (o, 4800, 19200) - 880.0) < 20.0, "pitch +12 without sync");
-        CHECK (peakIn (o, 0.40, 0.45) > 0.2f && peakIn (o, 0.55, 0.7) < 0.05f, "pitch keeps the tempo (slice still 0.5 s)");
+        CHECK (std::abs (estimateHz (o, 2400, 9600) - 880.0) < 20.0, "pitch +12 without sync");
+        // pitch keeps the groove: PLAY a pitched step loop and each step still starts on time
+        Rig pg (makeStepSample());
+        pg.p.pitchSemis = 12.f; pg.apply();
+        pg.e.startPreview();
+        o = render (pg.e, (int) (sr * 1.3), pg.t);
+        pg.e.stopPreview();
+        CHECK (std::abs (o[(size_t) (sr * 0.6)] - 0.10f) < 0.01f && std::abs (o[(size_t) (sr * 1.1)] - 0.15f) < 0.01f,
+               "pitched up, every step still starts on time (tempo kept)");
         r.p.pitchSemis = 0.f; r.apply();
+
+        // TONAL: the spectral stretcher really stretches, at the same pitch
+        Rig tn (makeSine (440.0, 8.0));
+        tn.p.sync = true; tn.p.stretchMode = stretchTonal; tn.apply();
+        tn.t.bpm = 60.0;
+        o = tn.play (0, 1.2);
+        CHECK (std::abs (estimateHz (o, 4800, 38400) - 440.0) < 3.0, "TONAL: half tempo, same pitch");
+        CHECK (peakIn (o, 0.85, 0.95) > 0.3f && peakIn (o, 1.08, 1.2) < 0.05f, "TONAL: the slice stretches to 1 s");
+        float lo = 1.f, hi = 0.f;
+        for (int w = 1; w < 8; ++w)
+        {
+            const float pk = peakIn (o, 0.1 * w, 0.1 * w + 0.02);
+            lo = std::min (lo, pk); hi = std::max (hi, pk);
+        }
+        CHECK (lo > 0.8f * hi, "TONAL: steady level, no grain wobble");
+        tn.t.bpm = 120.0;
+        tn.p.pitchSemis = 7.f; tn.apply();
+        o = tn.play (0, 0.45);
+        CHECK (std::abs (estimateHz (o, 4800, 19200) - 440.0 * std::pow (2.0, 7.0 / 12.0)) < 8.0, "TONAL: +7 semitones");
 
         // set BPM syncs: loop 60 BPM, host 120 -> slice (1 s at 60) plays in 0.5 s
         Rig b (makeStepSample());
@@ -310,6 +336,48 @@ int main()
         s2.e.startPreview();
         o = render (s2.e, (int) (sr * 4.3), s2.t);
         CHECK (peakIn (o, 3.6, 3.9) > 0.5f && peakIn (o, 4.1, 4.3) < 1e-3f, "PLAY with Sync plays the loop in FL's tempo");
+    }
+
+    // --- BEATS: a drum loop follows the tempo with every hit kept sharp ----------------
+    {
+        std::vector<double> times { 0.0, 0.5, 1.0, 1.5 };
+        Rig d (makeHits (times, 2.0));                 // 2 s = 1 bar at 120
+        d.p.bars = 1; d.p.slicesPerBar = 4; d.p.sync = true; d.apply();
+        d.t.bpm = 160.0;                                // faster: hits every 0.375 s
+        d.e.startPreview();
+        auto o = render (d.e, (int) (sr * 1.6), d.t);
+        d.e.stopPreview();
+        bool onTime = true, sharp = true;
+        for (int k = 1; k < 4; ++k)
+        {
+            const double at = k * 0.375;
+            onTime = onTime && peakIn (o, at, at + 0.01) > 0.4f && peakIn (o, at - 0.02, at - 0.004) < 0.25f;
+            // the hit matches the original sample for sample (allowing a sample or two of offset)
+            double best = 1e9;
+            for (int off = -3; off <= 3; ++off)
+            {
+                double diff = 0.0;
+                for (int i = 16; i < (int) (0.01 * sr); ++i)
+                    diff += std::abs (o[(size_t) ((long) (at * sr) + off + i)] - d.data.left[(size_t) (times[(size_t) k] * sr) + (size_t) i]);
+                best = std::min (best, diff / (0.01 * sr));
+            }
+            sharp = sharp && best < 0.01;
+        }
+        CHECK (onTime, "BEATS: hits land on the new tempo's grid");
+        CHECK (sharp, "BEATS: hits play untouched (no stretching artefacts)");
+    }
+
+    // --- BEATS at the loop's own tempo is bit-for-bit the original (no seams at slice boundaries)
+    {
+        Rig b (makeSine (440.0, 8.0));
+        b.p.sync = true; b.apply();
+        b.e.startPreview();
+        auto o = render (b.e, (int) (sr * 7.5), b.t);
+        b.e.stopPreview();
+        float worst = 0.f;
+        for (int i = 2000; i < (int) (sr * 7.4); ++i)
+            worst = std::max (worst, std::abs (o[(size_t) i] - b.data.left[(size_t) i]));
+        CHECK (worst < 1e-3f, "BEATS at the same tempo plays the loop exactly as it is");
     }
 
     // --- roll -------------------------------------------------------------------------
@@ -425,7 +493,7 @@ int main()
         Rig r (makeSine (440.0, 8.0));
         r.pads[0].tune = 12.f;
         auto o = r.play (0, 0.45);
-        CHECK (std::abs (estimateHz (o, 4800, 19200) - 880.0) < 20.0, "pad tune +12");
+        CHECK (std::abs (estimateHz (o, 2400, 9600) - 880.0) < 20.0, "pad tune +12");
         r.pads[0] = PadSettings();
         Rig hi (makeSine (6000.0, 8.0));
         hi.pads[0].cutoffHz = 500.f;

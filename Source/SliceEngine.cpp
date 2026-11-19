@@ -1,5 +1,7 @@
 #include "SliceEngine.h"
 
+#include "signalsmith-stretch/signalsmith-stretch.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -45,6 +47,8 @@ int sliceKeyForNote (int note)
     return -1;
 }
 
+SliceEngine::~SliceEngine() = default;
+
 SliceEngine::SliceEngine()
 {
     for (int i = 0; i < maxSlices; ++i)
@@ -60,6 +64,19 @@ void SliceEngine::prepare (double sampleRate, int)
     const auto delaySize = (size_t) (sr * 4.5);
     delayL.assign (delaySize, 0.f);
     delayR.assign (delaySize, 0.f);
+
+    stretchers.clear();
+    stretchers.resize (numStretchers);
+    const auto inSize = (size_t) (sr * 0.12 * 6.0) + tonalBlock * 8;
+    for (auto& st : stretchers)
+    {
+        st.stretch = std::make_unique<Stretcher>();
+        st.stretch->presetDefault (2, (float) sr);
+        st.inL.assign (inSize, 0.f);
+        st.inR.assign (inSize, 0.f);
+        st.outL.assign ((size_t) tonalBlock, 0.f);
+        st.outR.assign ((size_t) tonalBlock, 0.f);
+    }
     reset();
 }
 
@@ -67,6 +84,8 @@ void SliceEngine::reset()
 {
     for (auto& v : voices)
         v = Voice();
+    for (auto& st : stretchers)
+        st.used = false;
     perf.fill (false);
     for (auto& h : held) h = Held();
     motionCounter.fill (0);
@@ -105,7 +124,7 @@ void SliceEngine::setSample (const SampleData* data)
     if (data != sample)
     {
         for (auto& v : voices)
-            v.active = false;
+            freeVoice (v);
         sample = data;
     }
 }
@@ -284,6 +303,7 @@ void SliceEngine::startPreview()
     Voice* target = &voices[0];
     for (auto& v : voices)
         if (! v.active) { target = &v; break; }
+    if (target->slot >= 0) stretchers[(size_t) target->slot].used = false;
 
     const double len = sample->length();
     const double a = slices != nullptr ? slices->trimStart : 0.0;
@@ -308,7 +328,262 @@ void SliceEngine::startPreview()
     v.grainAnchor[0] = v.grainAnchor[1] = v.head;
     v.grainAge[0] = 0.0;
     v.grainAge[1] = grain * 0.5;
+    v.multiSeg = true;
+    setupVoiceMode (v);
     uiPreviewing = true;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Stretch modes
+
+void SliceEngine::freeVoice (Voice& v)
+{
+    if (v.slot >= 0 && v.slot < (int) stretchers.size())
+        stretchers[(size_t) v.slot].used = false;
+    v.slot = -1;
+    v.active = false;
+}
+
+void SliceEngine::setupVoiceMode (Voice& v)
+{
+    const double dir = (v.reverse != perf[fxReverse]) ? -1.0 : 1.0;
+    v.display = v.head;
+
+    if (params.textureAmount > 0.001f)
+    {
+        v.mode = modeTexture;
+        return;
+    }
+
+    if (params.stretchMode == stretchTonal)
+        for (int i = 0; i < (int) stretchers.size(); ++i)
+        {
+            auto& slot = stretchers[(size_t) i];
+            if (slot.used) continue;
+            slot.used = true;
+            v.mode = modeTonal;
+            v.slot = i;
+            auto& st = *slot.stretch;
+            const double rate = std::clamp (lastSpeed * lastModRate, 0.05, 4.0);
+            st.setTransposeFactor (1.f);
+            // Prime the stretcher with the start of the sound, so the output starts right away (no latency).
+            const int seekLen = std::min ((int) slot.inL.size(), st.outputSeekLength ((float) rate));
+            const bool loop = v.preview ? params.loop : v.loop;
+            for (int k = 0; k < seekLen; ++k)
+            {
+                const double pos = v.head + k * dir;
+                slot.inL[(size_t) k] = readTonalInput (v, sample->left, pos, loop);
+                slot.inR[(size_t) k] = readTonalInput (v, sample->right, pos, loop);
+            }
+            float* in[2] = { slot.inL.data(), slot.inR.data() };
+            st.outputSeek (in, seekLen);
+            v.head += seekLen * dir;
+            v.fifoPos = tonalBlock;
+            v.inputCarry = 0.0;
+            return;
+        }
+
+    // BEATS (also the fallback if every stretcher is busy)
+    v.mode = modeBeats;
+    v.timeline = dir > 0 ? v.regionStart : v.regionEnd - 1e-6;
+    v.seg = -1;
+    v.lastSegGain = 0.f;
+    VoiceContext c;
+    c.fadeLen = std::max (16.f, msToSamples (params.xfadeMs));
+    jumpToSegment (v, dir, c, false);
+    v.oldGain = 0.f;
+}
+
+int SliceEngine::segmentAt (const Voice& v, double pos, double& a, double& b) const
+{
+    if (pos < v.regionStart || pos >= v.regionEnd)
+        return -1;
+    if (! v.multiSeg || slices == nullptr || sample == nullptr)
+    {
+        a = v.regionStart;
+        b = v.regionEnd;
+        return 0;
+    }
+    const double len = sample->length();
+    for (int i = 0; i < slices->count; ++i)
+    {
+        const double sa = std::max (slices->s[(size_t) i].start * len, v.regionStart);
+        const double sb = std::min (slices->s[(size_t) i].end * len, v.regionEnd);
+        if (pos >= sa && pos < sb) { a = sa; b = sb; return i; }
+    }
+    return -1;   // a gap between slices: silence
+}
+
+void SliceEngine::jumpToSegment (Voice& v, double dir, const VoiceContext& c, bool loopWrap)
+{
+    double a = 0.0, b = 0.0;
+    const int newSeg = segmentAt (v, v.timeline, a, b);
+    const double newHead = dir > 0 ? a : b - 1e-6;
+
+    if (newSeg >= 0 && v.seg >= 0 && std::abs (newHead - v.head) < 2.0)
+    {
+        // The audio simply carries on into the next slice (the tempo matches): no fades at all.
+        v.seg = newSeg;
+        v.segStart = a;
+        v.segEnd = b;
+        v.oldGain = 0.f;
+        updateNextContiguous (v, dir);
+        return;
+    }
+
+    // A loop wrap is a straight splice (a loop cut on the beat runs on seamlessly); any other jump
+    // lets the old segment fade out underneath the new one.
+    v.oldHead = v.head;
+    v.oldGain = (v.seg >= 0 && ! loopWrap) ? v.lastSegGain : 0.f;
+    v.oldStep = v.oldGain / std::max (1.f, c.fadeLen);
+    v.seg = newSeg;
+    if (newSeg >= 0)
+    {
+        v.segStart = a;
+        v.segEnd = b;
+        v.head = newHead;
+        v.segOffset = loopWrap && v.multiSeg && v.plays > 0 ? 1e9 : 0.0;
+    }
+    updateNextContiguous (v, dir);
+}
+
+void SliceEngine::updateNextContiguous (Voice& v, double dir)
+{
+    // Does audio carry straight on after this segment (the next slice starts exactly where this one ends)?
+    v.nextContiguous = false;
+    if (! v.multiSeg || v.seg < 0)
+        return;
+    const double edge = dir > 0 ? v.segEnd : v.segStart;
+    const bool atRegionEdge = dir > 0 ? edge >= v.regionEnd - 1.0 : edge <= v.regionStart + 1.0;
+    if (atRegionEdge)
+    {
+        v.nextContiguous = v.preview ? params.loop : v.loop;   // a loop splices straight back to the start
+        return;
+    }
+    double a, b;
+    const double probe = dir > 0 ? edge + 0.5 : edge - 1.5;
+    v.nextContiguous = segmentAt (v, probe, a, b) >= 0 && (dir > 0 ? std::abs (a - edge) < 1.0 : std::abs (b - edge) < 1.0);
+}
+
+void SliceEngine::renderBeats (Voice& v, const VoiceContext& c, double dir, bool loop, float& L, float& R, bool& finished)
+{
+    const double tlRate = c.speed * c.modRate;                     // the groove follows the tempo...
+    const double rd = c.pitchRatio * v.tuneRatio * c.modRate;      // ...but the audio itself plays untouched (pitch = varispeed)
+
+    float segGain = 0.f;
+    if (v.seg >= 0)
+    {
+        const double toEnd = dir > 0 ? v.segEnd - v.head : v.head - v.segStart;
+        if (toEnd > 0.0)
+        {
+            const float fadeIn = (float) std::min (1.0, v.segOffset / 8.0);        // a few samples: keeps the hit's attack
+            // Fade out before the end only if the audio would run out before the groove moves on
+            // (slower tempo or pitched up); otherwise the next slice takes over at the boundary.
+            const bool runsOut = rd > tlRate * 1.000001 || ! v.nextContiguous;
+            const float fadeOut = runsOut ? std::clamp ((float) toEnd / c.fadeLen, 0.f, 1.f) : 1.f;
+            segGain = std::min (fadeIn, fadeOut);
+            L += readSample (sample->left, v.head) * segGain;
+            R += readSample (sample->right, v.head) * segGain;
+            v.head += rd * dir;
+            v.segOffset += rd;
+        }
+    }
+    v.lastSegGain = segGain;
+
+    if (v.oldGain > 0.f)
+    {
+        L += readSample (sample->left, v.oldHead) * v.oldGain;
+        R += readSample (sample->right, v.oldHead) * v.oldGain;
+        v.oldHead += rd * dir;
+        v.oldGain = std::max (0.f, v.oldGain - v.oldStep);
+    }
+
+    v.timeline += tlRate * dir;
+    v.display = v.timeline;
+    const bool past = dir > 0 ? v.timeline >= v.regionEnd : v.timeline < v.regionStart;
+    if (past)
+    {
+        ++v.plays;
+        if (loop && (v.repeats <= 0 || v.plays < v.repeats))
+        {
+            const double regionLen = v.regionEnd - v.regionStart;
+            v.timeline += dir > 0 ? -regionLen : regionLen;
+            jumpToSegment (v, dir, c, true);
+        }
+        else
+            finished = true;
+    }
+    else if (v.multiSeg)
+    {
+        double a, b;
+        if (segmentAt (v, v.timeline, a, b) != v.seg)
+            jumpToSegment (v, dir, c, false);
+    }
+}
+
+float SliceEngine::readTonalInput (const Voice& v, const std::vector<float>& buf, double pos, bool loop) const
+{
+    const double rs = v.regionStart, re = v.regionEnd, len = re - rs;
+    if (loop && len > 1.0)
+    {
+        pos = rs + std::fmod (pos - rs, len);
+        if (pos < rs) pos += len;
+        return readSample (buf, pos);
+    }
+    if (pos < rs || pos >= re)
+        return 0.f;
+    const float g = (float) std::min (std::min (1.0, (pos - rs) / 24.0), std::min (1.0, (re - pos) / 48.0));
+    return readSample (buf, pos) * g;
+}
+
+void SliceEngine::renderTonal (Voice& v, const VoiceContext& c, double dir, bool loop, float& L, float& R, bool& finished)
+{
+    auto& slot = stretchers[(size_t) v.slot];
+    auto& st = *slot.stretch;
+    if (v.fifoPos >= tonalBlock)
+    {
+        const double rate = std::clamp (c.speed * c.modRate, 0.0, 4.0);
+        const double transpose = std::clamp (c.pitchRatio * v.tuneRatio * c.modRate, 0.05, 16.0);
+        st.setTransposeFactor ((float) transpose);
+
+        const bool loopNow = loop && (v.repeats <= 0 || v.plays < v.repeats);
+        v.inputCarry += tonalBlock * rate;
+        const int ni = std::min ((int) v.inputCarry, (int) slot.inL.size());
+        v.inputCarry -= ni;
+        for (int k = 0; k < ni; ++k)
+        {
+            const double pos = v.head + k * dir;
+            slot.inL[(size_t) k] = readTonalInput (v, sample->left, pos, loopNow);
+            slot.inR[(size_t) k] = readTonalInput (v, sample->right, pos, loopNow);
+        }
+        v.head += ni * dir;
+        const double len = v.regionEnd - v.regionStart;
+        if (loopNow && len > 1.0 && (v.head >= v.regionEnd + len || v.head < v.regionStart - len))
+        {
+            v.head = v.regionStart + std::fmod (v.head - v.regionStart, len);
+            if (v.head < v.regionStart) v.head += len;
+            ++v.plays;
+        }
+
+        float* in[2] = { slot.inL.data(), slot.inR.data() };
+        float* out[2] = { slot.outL.data(), slot.outR.data() };
+        st.process (in, ni, out, tonalBlock);
+        v.fifoPos = 0;
+
+        // what you hear lags the input by the stretcher's latency
+        double heard = v.head - dir * (st.inputLatency() + rate * st.outputLatency());
+        if (loopNow && len > 1.0)
+        {
+            heard = v.regionStart + std::fmod (heard - v.regionStart, len);
+            if (heard < v.regionStart) heard += len;
+        }
+        v.display = heard;
+        if (! loopNow && (dir > 0 ? heard >= v.regionEnd : heard < v.regionStart))
+            finished = true;
+    }
+    L = slot.outL[(size_t) v.fifoPos];
+    R = slot.outR[(size_t) v.fifoPos];
+    ++v.fifoPos;
 }
 
 void SliceEngine::stopPreview()
@@ -385,6 +660,8 @@ void SliceEngine::startVoice (int key, int note, float velocity, int level, bool
                 target = &v;
     }
 
+    if (target->slot >= 0) stretchers[(size_t) target->slot].used = false;
+
     const double len = sample->length();
     const auto& sl = slices->s[(size_t) slice];
 
@@ -451,6 +728,8 @@ void SliceEngine::startVoice (int key, int note, float velocity, int level, bool
     v.grainAge[0] = 0.0;
     v.grainAnchor[1] = v.head;
     v.grainAge[1] = grain * 0.5;
+    v.multiSeg = params.full;
+    setupVoiceMode (v);
 }
 
 void SliceEngine::updateRollLength (int fx, double beatSamples)
@@ -480,9 +759,6 @@ void SliceEngine::process (float* left, float* right, int n, const Transport& t)
     if (params.sync && lb > 0.0)
         speed = std::clamp (hostBpm / lb, 0.25, 4.0);
 
-    // SYNC changes the speed but never the pitch: whenever the speed differs from the loop's own, the grains
-    // keep the original tone.
-    const bool granularParams = params.textureAmount > 0.001f || std::abs (speed - 1.0) > 1e-6;
     const double grainLen = std::max (256.0, (double) msToSamples (params.grainMs));
     const float edgeSamples = std::max (16.f, msToSamples (params.xfadeMs));
     const float attackSamples = std::max (1.f, msToSamples (params.attackMs));
@@ -594,14 +870,13 @@ void SliceEngine::process (float* left, float* right, int n, const Transport& t)
         double modRate = tapeRate;
         if (perf[fxHalf] != perf[fxDouble])
             modRate *= perf[fxHalf] ? 0.5 : 2.0;
+        lastSpeed = speed;
+        lastModRate = modRate;
 
         const double semis = currentSemis - 12.0 * diveProgress * diveProgress;
         const double pitchRatio = std::pow (2.0, semis / 12.0);
-        // Pitch never changes the tempo: the read head always moves at the loop's (synced) speed,
-        // and pitch is applied by the grains. Without Key Lock, Sync still repitches like a sampler.
         const double headRate = speed * modRate;
         const double basePitch = pitchRatio * modRate;
-        const bool granularNow = granularParams || std::abs (semis) > 0.001;
 
         // --- voices --------------------------------------------------------------
         float mixL = 0.f, mixR = 0.f;
@@ -609,28 +884,38 @@ void SliceEngine::process (float* left, float* right, int n, const Transport& t)
 
         if (sample != nullptr)
         {
+            VoiceContext ctx;
+            ctx.speed = speed;
+            ctx.modRate = modRate;
+            ctx.pitchRatio = pitchRatio;
+            ctx.fadeLen = edgeSamples;
+
             for (auto& v : voices)
             {
                 if (! v.active)
                     continue;
                 anyActive = true;
                 const double dir = (v.reverse != perf[fxReverse]) ? -1.0 : 1.0;
-                const double grainPitch = basePitch * v.tuneRatio;
+                const bool loopNow = v.preview ? params.loop : v.loop;
+                float sL = 0.f, sR = 0.f, edge = 1.f;
+                bool finished = false;
 
-                if ((granularNow || std::abs (v.tuneRatio - 1.0) > 1e-9) && ! v.granular)
+                if (v.mode == modeBeats)
+                    renderBeats (v, ctx, dir, loopNow, sL, sR, finished);
+                else if (v.mode == modeTonal)
+                    renderTonal (v, ctx, dir, loopNow, sL, sR, finished);
+                else
                 {
-                    // Switch this voice to the grain reader, phase-aligned with the head.
-                    v.granular = true;
-                    v.grainAge[0] = 0.0;
-                    v.grainAnchor[0] = v.head;
-                    v.grainAge[1] = grainLen * 0.5;
-                    v.grainAnchor[1] = v.head + grainLen * 0.5 * (grainPitch - headRate) * dir;
-                }
-
-                float sL, sR;
-                if (v.granular)
-                {
-                    sL = sR = 0.f;
+                    // Texture mode: the original grain reader (used as an effect)
+                    const double grainPitch = basePitch * v.tuneRatio;
+                    if (! v.granular)
+                    {
+                        v.granular = true;
+                        v.grainAge[0] = 0.0;
+                        v.grainAnchor[0] = v.head;
+                        v.grainAge[1] = grainLen * 0.5;
+                        v.grainAnchor[1] = v.head + grainLen * 0.5 * (grainPitch - headRate) * dir;
+                    }
                     for (int g = 0; g < 2; ++g)
                     {
                         const double w = 0.5 - 0.5 * std::cos (twoPi * v.grainAge[g] / grainLen);
@@ -644,25 +929,36 @@ void SliceEngine::process (float* left, float* right, int n, const Transport& t)
                             v.grainAnchor[g] = v.head + randomUni() * params.textureAmount * grainLen;
                         }
                     }
-                }
-                else
-                {
-                    sL = readSample (sample->left, v.head);
-                    sR = readSample (sample->right, v.head);
+                    const double dStart = v.head - v.regionStart, dEnd = v.regionEnd - v.head;
+                    edge = std::clamp ((float) std::min (dStart, dEnd) / edgeSamples, 0.f, 1.f);
+                    if (v.preview && loopNow && (v.plays > 0 || dEnd < dStart))
+                        edge = 1.f;
+                    v.head += headRate * dir;
+                    v.display = v.head;
+                    const double regionLen = v.regionEnd - v.regionStart;
+                    if ((dir > 0 && v.head >= v.regionEnd) || (dir < 0 && v.head < v.regionStart))
+                    {
+                        ++v.plays;
+                        if (loopNow && (v.repeats <= 0 || v.plays < v.repeats))
+                        {
+                            const double shift = dir > 0 ? -regionLen : regionLen;
+                            v.head += shift; v.grainAnchor[0] += shift; v.grainAnchor[1] += shift;
+                        }
+                        else
+                            finished = true;
+                    }
                 }
 
-                const double dStart = v.head - v.regionStart, dEnd = v.regionEnd - v.head;
-                // PLAY follows the LOOP switch live, and loops seamlessly (no fade at the loop point
-                // once it has started; only the very first start fades in).
-                const bool loopNow = v.preview ? params.loop : v.loop;
-                float edge = std::clamp ((float) std::min (dStart, dEnd) / edgeSamples, 0.f, 1.f);
-                if (v.preview && loopNow && (v.plays > 0 || dEnd < dStart))
-                    edge = 1.f;
+                if (finished && ! v.releasing)
+                {
+                    v.releasing = true;
+                    v.releaseStep = std::max (v.env, 0.001f) / std::max (1.f, msToSamples (3.f));
+                }
 
                 if (v.releasing)
                 {
                     v.env -= v.releaseStep;
-                    if (v.env <= 0.f) { v.active = false; continue; }
+                    if (v.env <= 0.f) { freeVoice (v); continue; }
                 }
                 else if (v.env < 1.f)
                     v.env = std::min (1.f, v.env + 1.f / attackSamples);
@@ -670,7 +966,7 @@ void SliceEngine::process (float* left, float* right, int n, const Transport& t)
                 if (v.decayStep > 0.f)
                 {
                     v.decayGain -= v.decayStep;
-                    if (v.decayGain <= 0.f) { v.active = false; continue; }
+                    if (v.decayGain <= 0.f) { freeVoice (v); continue; }
                 }
 
                 if (v.filtered)
@@ -691,21 +987,6 @@ void SliceEngine::process (float* left, float* right, int n, const Transport& t)
                 const float g = v.env * edge * v.velocity * v.decayGain;
                 mixL += sL * g * v.gainL;
                 mixR += sR * g * v.gainR;
-
-                v.head += headRate * dir;
-                const double regionLen = v.regionEnd - v.regionStart;
-                const bool pastEnd = (dir > 0 && v.head >= v.regionEnd) || (dir < 0 && v.head < v.regionStart);
-                if (pastEnd)
-                {
-                    ++v.plays;
-                    const bool again = loopNow && (v.repeats <= 0 || v.plays < v.repeats);
-                    if (again)
-                    {
-                        const double shift = dir > 0 ? -regionLen : regionLen;
-                        v.head += shift; v.grainAnchor[0] += shift; v.grainAnchor[1] += shift;
-                    }
-                    else v.active = false;
-                }
 
                 if (v.active && ! v.releasing && (lead == nullptr || v.age > lead->age))
                     lead = &v;
@@ -876,7 +1157,7 @@ void SliceEngine::process (float* left, float* right, int n, const Transport& t)
     {
         uiActiveSlice = lead->slice;
         uiActiveKey = lead->uiKey;
-        uiPlayhead = (float) std::clamp (lead->head / sample->length(), 0.0, 1.0);
+        uiPlayhead = (float) std::clamp (lead->display / sample->length(), 0.0, 1.0);
     }
     else
     {
