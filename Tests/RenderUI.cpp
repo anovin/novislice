@@ -24,7 +24,9 @@ int main (int argc, char** argv)
         for (int i = 0; i < 8; ++i) { proc.processBlock (buf, midi); midi.clear(); }
         if (auto* p = proc.apvts.getParameter ("sync")) p->setValueNotifyingHost (1.f);
         if (argc > 4)
-            if (auto* p = proc.apvts.getParameter ("bars")) p->setValueNotifyingHost (p->convertTo0to1 ((float) NoviSliceProcessor::barsChoices.indexOf (argv[4])));
+            if (juce::String (argv[4]) != "-")
+                if (auto* p = proc.apvts.getParameter ("bars")) p->setValueNotifyingHost (p->convertTo0to1 ((float) NoviSliceProcessor::barsChoices.indexOf (argv[4])));
+        proc.recomputeSlices();
         if (auto* p = proc.apvts.getParameter ("vinyl")) p->setValueNotifyingHost (0.3f);
         if (auto* p = proc.apvts.getParameter ("pitch")) p->setValueNotifyingHost (p->convertTo0to1 (4.f));
         if (auto* p = proc.apvts.getParameter ("dlyMix")) p->setValueNotifyingHost (0.25f);
@@ -34,6 +36,9 @@ int main (int argc, char** argv)
 
     std::unique_ptr<juce::AudioProcessorEditor> ed (proc.createEditor());
     ed->setSize (FacePanel::designW, FacePanel::designH);
+    if (argc > 5)
+        if (auto* e = dynamic_cast<NoviSliceEditor*> (ed.get()))
+            e->getPanel().setPage (juce::String (argv[5]).getIntValue());
     juce::MessageManager::getInstance()->runDispatchLoopUntil (300);
 
     auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.5f);

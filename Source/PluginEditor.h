@@ -37,57 +37,43 @@ private:
     const NoviFonts& fonts;
 };
 
+enum Page { pageSound = 0, pageChop, pagePad, pagePlay, numPages };
+
 class LcdDisplay : public juce::Component
 {
 public:
     LcdDisplay (NoviSliceProcessor&, const NoviFonts&);
     void paint (juce::Graphics&) override;
+    void mouseMove (const juce::MouseEvent&) override;
     void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
     void mouseUp (const juce::MouseEvent&) override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
     void refresh();
+    void flash (const juce::String& message);
 
     bool dropHover = false;
+    bool editing = false;                 // CHOP page: markers can be moved
+    int  selectedSlice = -1;
+    std::function<void (int slice)> onSliceClicked;
 
 private:
+    juce::Rectangle<float> waveArea() const;
+    double toFraction (float x) const;
+    float toX (double fraction) const;
+    enum class Grab { none, sliceStart, sliceEnd, trimStart, trimEnd };
+    Grab hitTest (juce::Point<float> p, int& slice) const;
+
     NoviSliceProcessor& proc;
     const NoviFonts& fonts;
     std::vector<float> peaks;
-    juce::String name;
-    int lastPeakVersion = -1;
+    novi::SliceMap map;
+    juce::String name, message;
+    juce::uint32 messageUntil = 0;
+    int lastPeakVersion = -1, lastSliceVersion = -1;
     int auditionNote = -1;
-};
-
-class PadButton : public juce::Component
-{
-public:
-    PadButton (NoviSliceProcessor&, const NoviFonts&);
-    void setKey (int keyIndex, bool enabled);
-    void setLit (bool lit);
-    void paint (juce::Graphics&) override;
-    void mouseDown (const juce::MouseEvent&) override;
-    void mouseUp (const juce::MouseEvent&) override;
-
-private:
-    NoviSliceProcessor& proc;
-    const NoviFonts& fonts;
-    int key = 0;
-    bool enabled = true, lit = false, pressed = false;
-};
-
-class PerfButton : public juce::Component
-{
-public:
-    PerfButton (NoviSliceProcessor&, const NoviFonts&, int fx);
-    void setLit (bool lit);
-    void paint (juce::Graphics&) override;
-    void mouseDown (const juce::MouseEvent&) override;
-    void mouseUp (const juce::MouseEvent&) override;
-
-private:
-    NoviSliceProcessor& proc;
-    const NoviFonts& fonts;
-    int fx;
-    bool lit = false, pressed = false, latched = false;
+    Grab grab = Grab::none;
+    int grabSlice = -1;
 };
 
 // Loop BPM: an LCD readout with up/down arrows. Drag to change, double-click to type.
@@ -117,6 +103,57 @@ private:
     bool dragging = false;
 };
 
+class PadButton : public juce::Component
+{
+public:
+    PadButton (NoviSliceProcessor&, const NoviFonts&);
+    void setState (int keyIndex, bool enabled, bool lit, bool selected, int sixteenLevel);
+    void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+
+    std::function<void (int key)> onSelect;
+
+private:
+    void release();
+
+    NoviSliceProcessor& proc;
+    const NoviFonts& fonts;
+    int key = 0, level = -1;
+    bool enabled = true, lit = false, selected = false, pressed = false, draggedOut = false;
+    novi::PadSettings shown;
+};
+
+class PerfButton : public juce::Component
+{
+public:
+    PerfButton (NoviSliceProcessor&, const NoviFonts&, int fx);
+    void setLit (bool lit);
+    void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+
+private:
+    NoviSliceProcessor& proc;
+    const NoviFonts& fonts;
+    int fx;
+    bool lit = false, pressed = false, latched = false;
+};
+
+// A button you drag out of the plugin to drop a file into FL Studio.
+class DragFileButton : public juce::TextButton
+{
+public:
+    DragFileButton (const juce::String& text, std::function<juce::File()> make) : juce::TextButton (text), makeFile (std::move (make)) {}
+    void mouseDrag (const juce::MouseEvent& e) override;
+    void mouseUp (const juce::MouseEvent& e) override;
+
+private:
+    std::function<juce::File()> makeFile;
+    bool dragging = false;
+};
+
 class FacePanel : public juce::Component
 {
 public:
@@ -126,38 +163,34 @@ public:
     void paintOverChildren (juce::Graphics&) override;
     void resized() override;
     void refresh();
+    void setPage (int page);
+    void selectPad (int key);
 
-    static constexpr int designW = 1100, designH = 736;
-    static constexpr int meterY = 598;
+    static constexpr int designW = 1100, designH = 772;
+    static constexpr int meterY = 642;
 
     LcdDisplay& getLcd() { return lcd; }
 
 private:
-    struct Knob
-    {
-        std::unique_ptr<juce::Slider> slider;
-        std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attachment;
-        juce::String label;
-    };
-    struct Choice
-    {
-        std::unique_ptr<juce::ComboBox> box;
-        std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> attachment;
-        juce::String label;
-    };
-    struct Toggle
-    {
-        std::unique_ptr<juce::TextButton> button;
-        std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> attachment;
-    };
-    struct SectionBox { juce::String title; juce::Rectangle<int> area; };
+    struct Labelled { juce::Component* comp; juce::String label; int page; };
+    struct SectionBox { juce::String title; juce::Rectangle<int> area; int page; };
 
-    Knob& addKnob (const juce::String& paramId, const juce::String& label);
-    Choice& addChoice (const juce::String& paramId, const juce::String& label, const juce::StringArray& items);
-    Toggle& addToggle (const juce::String& paramId, const juce::String& text);
-    void placeKnob (const juce::String& paramId, int x, int y);
-    void placeChoice (const juce::String& paramId, int x, int y, int w);
+    juce::Slider& addKnob (const juce::String& paramId, const juce::String& label, int page);
+    juce::ComboBox& addChoice (const juce::String& paramId, const juce::String& label, const juce::StringArray& items, int page);
+    juce::TextButton& addToggle (const juce::String& paramId, const juce::String& text, int page);
+    juce::Slider& addPadKnob (const juce::String& label, double lo, double hi, double step, double centre, double def,
+                              std::function<juce::String (double)> text);
+    juce::ComboBox& addPadChoice (const juce::String& label, const juce::StringArray& items);
+    juce::TextButton& addPadToggle (const juce::String& text);
+    juce::TextButton& addButton (const juce::String& text, int page, std::function<void()> onClick);
+    void place (juce::Component& c, int x, int y, int w, int h);
+    void placeKnob (juce::Component& c, int x, int y) { place (c, x, y + 16, 62, 80); }
+    void placeLabelled (juce::Component& c, int x, int y, int w, int h = 26) { place (c, x, y + 16, w, h); }
+    void addToPage (juce::Component& c, int page, const juce::String& label = {});
+    void loadPadControls();
+    void storePadControls();
     void loadViaChooser();
+    void exportWavs();
     void paintChassis (juce::Graphics&);
 
     NoviSliceProcessor& proc;
@@ -169,16 +202,34 @@ private:
     juce::TooltipWindow tooltips { this, 600 };
     juce::TextButton loadButton { "LOAD" }, shuffleButton { "SHUFFLE" }, resetButton { "RESET" };
     juce::TextButton bankA { "A" }, bankB { "B" };
-    std::map<juce::String, Knob> knobs;
-    std::map<juce::String, Choice> choices;
-    std::map<juce::String, Toggle> toggles;
+    std::array<juce::TextButton, numPages> pageTabs;
+
+    std::vector<std::unique_ptr<juce::Slider>> sliders;
+    std::vector<std::unique_ptr<juce::ComboBox>> combos;
+    std::vector<std::unique_ptr<juce::Button>> buttons;
+    std::vector<std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>> sliderAttachments;
+    std::vector<std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment>> comboAttachments;
+    std::vector<std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment>> buttonAttachments;
+    std::map<juce::String, juce::Component*> byId;
+
+    // pad edit controls
+    juce::Slider *padTune = nullptr, *padLevel = nullptr, *padPan = nullptr, *padCutoff = nullptr, *padTail = nullptr;
+    juce::ComboBox *padPlayMode = nullptr, *padMuteGroup = nullptr, *padRepeats = nullptr, *padMotion = nullptr, *padCycles = nullptr;
+    juce::TextButton *padReverse = nullptr, *padLoop = nullptr, *padMute = nullptr, *padSolo = nullptr;
+    bool loadingPad = false;
+
+    std::unique_ptr<DragFileButton> dragMidi;
     std::array<std::unique_ptr<PadButton>, 16> pads;
     std::array<std::unique_ptr<PerfButton>, novi::numPerfFx> perfButtons;
+    std::vector<Labelled> labelled;
     std::vector<SectionBox> sections;
+    std::vector<std::pair<juce::Component*, int>> pageMembers;
     std::unique_ptr<juce::FileChooser> chooser;
     juce::Image chassisCache;
 
+    int page = pageSound;
     int bank = 0;
+    int selectedPad = 0;
     float meterLevel = 0.f;
 };
 
@@ -197,6 +248,8 @@ public:
     void fileDragEnter (const juce::StringArray&, int, int) override;
     void fileDragExit (const juce::StringArray&) override;
     void filesDropped (const juce::StringArray& files, int, int) override;
+
+    FacePanel& getPanel() { return panel; }
 
 private:
     void timerCallback() override;

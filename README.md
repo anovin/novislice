@@ -1,6 +1,8 @@
 # NoviSlice
 
-A loop-slicing instrument for FL Studio. Drop in a loop and NoviSlice chops it onto a grid. Each slice goes on its own key and pad, so you can replay the loop in a new order, then roll, reverse, stop and throw it with 16 performance effects.
+A loop-slicing instrument for FL Studio, with MPC-style chopping and pad controls. Drop in a loop and NoviSlice chops it by tempo, into equal regions, on the hits, or wherever you put the markers. Each slice goes on its own key and pad, with its own pitch, level, pan, filter and play mode. Then you can roll, reverse, stop and throw it with 16 performance effects, use Note Repeat and 16 Levels, and drag the slices or a MIDI pattern straight into FL Studio.
+
+The panel has four pages, chosen with the buttons under the control strip: **SOUND** (effects), **CHOP** (slicing, processing and export), **PAD EDIT** (the selected pad) and **PLAY MODES** (polyphony, Note Repeat, 16 Levels, mutes).
 
 ## Getting started
 
@@ -16,18 +18,61 @@ The sample is saved inside your FL project, so projects still open if the file m
 | Control | What it does |
 |---|---|
 | **LOOP BPM** | The tempo of the sample. Drag it up or down, click the arrows (Shift for 0.1 steps), or double-click and type it. With Sync on, the loop plays at FL Studio's tempo. Clicking the up arrow while it shows AUTO locks in the guessed tempo. Go below 40, or type nothing, to return to AUTO. |
-| **BARS / PER BAR** | Sets the slice grid: 1–8 bars × 1–8 slices per bar, up to 32 slices. When Loop BPM is set, the grid follows the tempo instead and BARS is greyed out. Slices 17–32 are on pad bank **B**. |
+| **BARS / PER BAR** | The BPM grid: how many bars to slice (1–8 or 16) and how many slices per bar (1–8), up to 32 slices. With a Loop BPM set, bars are counted at that tempo, and anything past them shows as NOT SLICED. On AUTO, BARS also sets the guessed tempo. Slices 17–32 are on pad bank **B**. |
 | **TRIPLET** | Switches to a triplet grid: 2, 4 or 8 slices per bar become 3, 6 or 12. |
 | **FULL** | Keeps playing past the end of the slice to the end of the loop. |
 | **LOOP** | Loops the slice while the key is held. |
 | **SYNC** | Plays the loop at FL Studio's tempo, using the Loop BPM. |
 | **KEY LOCK** | Keeps the original pitch when Sync changes the speed. With it off you get the classic sampler sound, where slowing down to match FL Studio also lowers the pitch. The Pitch knob never changes the tempo either way. |
 | **SHUFFLE / RESET** | Shuffles which slice each key plays, or puts them back in order. Pads show the slice they play. |
-| Click the screen | Auditions the slice you click. |
+| Click the screen | Auditions the slice you click and selects its pad. |
 
-Playback is mono: a new slice cuts off the one before it, with a short crossfade.
+By default playback is mono: a new slice cuts off the one before it, with a short crossfade. Switch to POLY on the PLAY MODES page to let pads overlap.
 
-## Sound shaping
+## Chop page (MPC Chop Mode)
+
+| Control | What it does |
+|---|---|
+| **MODE** | *BPM GRID* slices by tempo (Loop BPM, BARS, PER BAR). *REGIONS* cuts into equal pieces. *TRANSIENT* puts a slice on every hit. *MANUAL* uses the markers you place. |
+| **REGIONS** | How many equal regions (REGIONS mode). |
+| **SENSITIVITY / MIN TIME** | Transient mode: higher sensitivity finds quieter hits; MIN TIME is the shortest slice allowed. |
+| **TRIM START / END** | The part of the sample that gets sliced. You can also drag the **S** and **E** flags on the screen. |
+| **0 SNAP** | Moves slice points to the nearest zero crossing, which avoids clicks. |
+| **LINK** | When on, moving a slice's start also moves the end of the slice before it. Turn it off to make gaps or overlaps. |
+| **SPLIT / COMBINE / CLEAR** | Split the selected slice in two, merge it with the one before, or start again with a single slice. |
+| On the screen | Drag a marker to move it, double-click to add one, Alt-click a marker to delete it. Moving a marker switches to MANUAL, starting from the current slices. |
+| **NORMALIZE / REVERSE / TO MONO** | Change the sample itself (Normalize to -0.1 dB, reverse it, or make it mono from both sides, the left or the right). The changed audio is saved in your project. |
+| **EXPORT WAVS** | Saves every slice as its own WAV file in a folder you choose. |
+| **DRAG MIDI** | Drag this button into FL Studio's piano roll or playlist to get a MIDI pattern that plays the slices in order, at the loop's tempo. |
+| Drag a pad out | Drag any pad out of NoviSlice to drop its slice into FL Studio as a WAV. |
+
+## Pad Edit page
+
+Settings for the selected pad (click a pad, or a slice on the screen, to select it). The readout next to the page buttons shows which pad, slice and key it is.
+
+| Control | What it does |
+|---|---|
+| **TUNE / LEVEL / PAN / CUTOFF / TAIL** | The pad's own pitch (±24 semitones, fine steps), volume, pan, low-pass filter, and extra audio after the slice ends so chops don't stop abruptly. Tune never changes the timing. |
+| **REVERSE / LOOP / MUTE / SOLO** | Play the slice backwards, loop it while held, mute the pad, or solo it (only soloed pads sound). |
+| **PLAY MODE** | *NOTE ON* plays while held, *ONE SHOT* plays the whole slice from one hit, *NOTE OFF* plays when you let go. |
+| **MUTE GROUP** | Pads in the same group (1–8) cut each other off, like open and closed hi-hats. |
+| **REPEATS** | With LOOP on: *HOLD* loops while you hold the pad, or 1X–16X plays the slice that many times. |
+| **MOTION / CYCLES** | Slice Motion: each hit plays the *NEXT* slice or a *RANDOM* one, moving through CYCLES slices from the pad's own. |
+| **RESET PAD / COPY TO ALL** | Put the pad back to normal, or copy its settings to every pad (mutes and solos stay as they are). |
+
+Pads show small tags for their settings: **M** mute, **S** solo, **1** one shot, **R** note off, **>** slice motion.
+
+## Play Modes page
+
+| Control | What it does |
+|---|---|
+| **POLYPHONY** | MONO (a new pad cuts the last one) or POLY (pads overlap, and mute groups still cut). |
+| **FULL LEVEL / VEL SENS** | Full Level plays every hit at full volume. Vel Sens sets how much velocity matters. |
+| **NOTE REPEAT / RATE / SWING** | Hold a pad to retrigger it at 1/4 to 1/32 or triplets, in time with FL Studio. Swing (50–75%, MPC-style) works on the straight rates. |
+| **16 LEVELS / TYPE** | Spreads one pad over pads 1–16 at rising *VELOCITY*, *TUNE* (pad 9 is the original pitch), *FILTER* or *DECAY*. Turning it on uses the selected pad; **USE SELECTED PAD** changes it. |
+| **CLEAR MUTES / CLEAR SOLOS** | Unmute or unsolo every pad. |
+
+## Sound page
 
 - **Texture:** *Amount* scatters the grains for a smeared, granular sound. *Grain* sets the grain size used by Key Lock and Texture. *Vinyl* adds crackle and hiss while slices play.
 - **Play:** *Pitch* (±24 semitones) changes the pitch but never the tempo, so slices stay in time. *Glide* smooths pitch changes, and *X-Fade* sets the fade at slice edges and between slices.

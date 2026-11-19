@@ -37,8 +37,51 @@ int noteForSliceKey (int keyIndex);
 // Slice key index for a MIDI note, or -1 if the note is not a slice key.
 int sliceKeyForNote (int note);
 
+// One slice, as fractions (0..1) of the sample's length.
+struct Slice { double start = 0.0, end = 0.0; };
+
+// Where the slices are. Worked out on the message thread (see Chopper) and handed to the engine.
+struct SliceMap
+{
+    int count = 0;
+    double regionEnd = 1.0;               // end of the chopped part (FULL plays up to here)
+    std::array<Slice, 32> s {};
+};
+
+enum PlayMode { playNoteOn = 0, playOneShot, playNoteOff };
+enum SliceMotion { motionOff = 0, motionNext, motionRandom };
+enum SixteenType { sixteenVelocity = 0, sixteenTune, sixteenFilter, sixteenDecay };
+
+// MPC-style settings for each pad (slice key 0..31).
+struct PadSettings
+{
+    float tune = 0.f;         // semitones, -24..24 (fractional = fine tune)
+    float levelDb = 0.f;      // -48..+6
+    float pan = 0.f;          // -1..1
+    float cutoffHz = 20000.f; // pad low-pass
+    float tailMs = 0.f;       // extra audio past the slice end
+    bool  reverse = false;
+    bool  mute = false, solo = false;
+    bool  loop = false;       // loop while held (Note On mode)
+    int   playMode = playNoteOn;
+    int   muteGroup = 0;      // 0 = none, 1..8
+    int   repeats = 0;        // with loop: 0 = while held, N = play N times
+    int   motion = motionOff; // slice motion
+    int   cycles = 0;         // slices the motion walks through, 0 = all
+
+    bool isDefault() const
+    {
+        auto zero = [] (float v) { return v > -1e-6f && v < 1e-6f; };
+        return zero (tune) && zero (levelDb) && zero (pan) && cutoffHz >= 20000.f && zero (tailMs) && ! reverse && ! mute
+               && ! solo && ! loop && playMode == playNoteOn && muteGroup == 0 && repeats == 0 && motion == motionOff && cycles == 0;
+    }
+};
+
+using PadArray = std::array<PadSettings, 32>;
+
 struct EngineParams
 {
+    double loopTempo = 0.0;    // the loop's tempo used by SYNC (worked out by the processor), 0 = unknown
     float sampleBpm = 0.f;     // tempo of the loop as set by the user; below minSampleBpm = auto (from BARS)
     int   bars = 4;            // how many bars to slice (with sampleBpm set: counted at that tempo from the start)
     int   slicesPerBar = 4;    // 1, 2, 4, 8
@@ -72,6 +115,17 @@ struct EngineParams
     float attackMs = 0.f;
     float releaseMs = 0.f;
     float outGainDb = 0.f;
+
+    // MPC-style play modes
+    bool  poly = false;        // pads overlap (mute groups still cut) instead of cutting each other off
+    bool  fullLevel = false;   // ignore velocity
+    float velSens = 1.f;       // 0..1, how much velocity changes the level
+    bool  noteRepeat = false;
+    int   repeatRate = 2;      // 0 1/4, 1 1/8, 2 1/16, 3 1/32, 4 1/8T, 5 1/16T, 6 1/32T
+    float swing = 0.5f;        // 0.5..0.75 (MPC 50%..75%)
+    bool  sixteenLevels = false;
+    int   sixteenType = sixteenVelocity;
+    int   sixteenSource = 0;   // the pad spread over the 16 pads
 };
 
 struct Transport
@@ -90,8 +144,10 @@ public:
     void prepare (double sampleRate, int maxBlockSize);
     void reset();
 
-    // Audio thread only. The pointer must stay valid until the next call (or nullptr).
+    // Audio thread only. The pointers must stay valid until the next call (or nullptr).
     void setSample (const SampleData* data);
+    void setSlices (const SliceMap* map) { slices = map; }
+    void setPads (const PadArray* p) { pads = p; }
     void setParams (const EngineParams& p) { params = p; }
     // keyIndex -> slice index (shuffle). Values outside 0..maxSlices-1 fall back to identity.
     void setOrder (const std::array<int, maxSlices>& order) { sliceOrder = order; }
@@ -103,9 +159,7 @@ public:
     // Renders (replaces) n samples into left/right.
     void process (float* left, float* right, int n, const Transport& t);
 
-    int  numSlices() const;
-    double loopBpm() const;       // the loop's tempo: Loop BPM if set, otherwise from length and BARS
-    double sliceLength() const;   // in samples
+    int  numSlices() const { return slices != nullptr ? slices->count : 0; }
 
     // Grid maths shared with the UI. lengthSamples/sampleRate describe the loop.
     static int    sliceCount (const EngineParams& p, double lengthSamples, double sampleRate);
@@ -131,6 +185,18 @@ private:
         bool   releasing = false;
         bool   granular = false;     // reading through the grain engine (pitch, key lock, texture)
         float  releaseStep = 0.f;
+        int    uiKey = -1;           // pad shown lit (differs from key in 16 Levels)
+        bool   reverse = false;      // pad reverse
+        bool   oneShot = false;      // ignores note off
+        bool   loop = false;
+        int    repeats = 0, plays = 0;
+        int    muteGroup = 0;
+        double tuneRatio = 1.0;
+        float  gainL = 1.f, gainR = 1.f;
+        float  decayStep = 0.f, decayGain = 1.f;
+        bool   filtered = false;
+        float  fa1 = 0.f, fa2 = 0.f, fa3 = 0.f, fk = 2.f;
+        float  f1[2] { 0.f, 0.f }, f2[2] { 0.f, 0.f };
         uint64_t age = 0;
         // granular reader
         double grainAnchor[2] { 0.0, 0.0 };
@@ -138,8 +204,9 @@ private:
     };
 
     float readSample (const std::vector<float>& buf, double pos) const;
-    void  startVoice (int key, int note, float velocity);
-    void  renderVoices (float* L, float* R, int n, double speed);
+    void  trigger (int key, int note, float velocity, int level, bool fromRepeat);
+    void  startVoice (int key, int note, float velocity, int level, bool forceOneShot);
+    const PadSettings& pad (int key) const;
     void  updateRollLength (int fx, double beatSamples);
     float msToSamples (float ms) const { return (float) (ms * 0.001 * sr); }
     float randomUni();   // -1..1
@@ -147,14 +214,24 @@ private:
     double sr = 44100.0;
     EngineParams params;
     const SampleData* sample = nullptr;
+    const SliceMap* slices = nullptr;
+    const PadArray* pads = nullptr;
     std::array<int, maxSlices> sliceOrder {};
+    std::array<int, maxSlices> motionCounter {};
 
-    static constexpr int numVoices = 6;
+    // what each held note plays (for Note Repeat and Note Off pads)
+    struct Held { bool on = false, pendingNoteOff = false; int key = -1, level = -1; float velocity = 1.f; double lastTrigger = -1e9; };
+    std::array<Held, 128> held {};
+    double sampleClock = 0.0;                     // samples since prepare
+    double repeatPos = 0.0;                       // free-running note-repeat position (beats)
+    long long nextTick = 0;
+    bool repeatSynced = false;
+
+    static constexpr int numVoices = 16;
     std::array<Voice, numVoices> voices;
     uint64_t voiceCounter = 0;
 
     std::array<bool, numPerfFx> perf {};
-    std::array<bool, 128> heldNotes {};
 
     // pitch glide
     float currentSemis = 0.f;

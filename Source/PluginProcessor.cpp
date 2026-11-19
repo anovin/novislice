@@ -1,6 +1,8 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
+#include <numeric>
+
 using APVTS = juce::AudioProcessorValueTreeState;
 
 const juce::StringArray NoviSliceProcessor::barsChoices   { "1", "2", "3", "4", "5", "6", "7", "8", "16" };
@@ -8,6 +10,10 @@ const juce::StringArray NoviSliceProcessor::slicesChoices { "1", "2", "4", "8" }
 const juce::StringArray NoviSliceProcessor::lfoChoices    { "OFF", "1/1", "1/2", "1/4", "1/8", "1/16" };
 const juce::StringArray NoviSliceProcessor::modeChoices   { "LP", "HP", "BP" };
 const juce::StringArray NoviSliceProcessor::delayChoices  { "1/16", "1/8", "1/8D", "1/4", "1/4D", "1/2" };
+const juce::StringArray NoviSliceProcessor::chopChoices   { "BPM GRID", "REGIONS", "TRANSIENT", "MANUAL" };
+const juce::StringArray NoviSliceProcessor::polyChoices   { "MONO", "POLY" };
+const juce::StringArray NoviSliceProcessor::repeatChoices { "1/4", "1/8", "1/16", "1/32", "1/8T", "1/16T", "1/32T" };
+const juce::StringArray NoviSliceProcessor::sixteenChoices { "VELOCITY", "TUNE", "FILTER", "DECAY" };
 
 namespace
 {
@@ -89,6 +95,27 @@ APVTS::ParameterLayout NoviSliceProcessor::createLayout()
     l.add (floatParam ("release", "Release", skewed (0.f, 2000.f, 200.f, 0.1f), 0.f, ms));
     l.add (floatParam ("gain", "Output", { -24.f, 12.f, 0.1f }, 0.f,
                        [] (float v) { return (v > 0.05f ? "+" : "") + juce::String (v, 1) + " dB"; }));
+
+    // Chop (MPC Chop Mode)
+    choice ("chopMode", "Chop mode", chopChoices, 0);
+    l.add (floatParam ("regions", "Regions", { 1.f, 32.f, 1.f }, 16.f, [] (float v) { return juce::String (juce::roundToInt (v)); }));
+    l.add (floatParam ("sensitivity", "Transient sensitivity", { 0.f, 100.f, 0.1f }, 50.f, pct));
+    l.add (floatParam ("minTime", "Transient min time", skewed (10.f, 500.f, 80.f, 0.1f), 60.f, msPlain));
+    l.add (floatParam ("trimStart", "Trim start", { 0.f, 1.f, 0.00001f }, 0.f, [] (float v) { return juce::String (v * 100.f, 1) + " %"; }));
+    l.add (floatParam ("trimEnd", "Trim end", { 0.f, 1.f, 0.00001f }, 1.f, [] (float v) { return juce::String (v * 100.f, 1) + " %"; }));
+    toggle ("zeroSnap", "Zero snap", false);
+    toggle ("linkSlices", "Link slices", true);
+
+    // Play modes (MPC pad / program settings)
+    choice ("poly", "Polyphony", polyChoices, 0);
+    toggle ("fullLevel", "Full level", false);
+    l.add (floatParam ("velSens", "Velocity sensitivity", { 0.f, 100.f, 0.1f }, 100.f, pct));
+    toggle ("noteRepeat", "Note repeat", false);
+    choice ("repeatRate", "Note repeat rate", repeatChoices, 2);
+    l.add (floatParam ("swing", "Swing", { 50.f, 75.f, 0.1f }, 50.f, [] (float v) { return juce::String (v, 1) + " %"; }));
+    toggle ("sixteen", "16 levels", false);
+    choice ("sixteenType", "16 levels type", sixteenChoices, 0);
+    l.add (floatParam ("sixteenSource", "16 levels pad", { 1.f, 32.f, 1.f }, 1.f, [] (float v) { return "PAD " + juce::String (juce::roundToInt (v)); }));
     return l;
 }
 
@@ -99,6 +126,13 @@ NoviSliceProcessor::NoviSliceProcessor()
     formats.registerBasicFormats();
     for (int i = 0; i < novi::maxSlices; ++i)
         order[(size_t) i].store (i);
+    lastChopHash = chopHash();
+    startTimerHz (15);
+}
+
+NoviSliceProcessor::~NoviSliceProcessor()
+{
+    stopTimer();
 }
 
 bool NoviSliceProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -126,6 +160,7 @@ void NoviSliceProcessor::readParams (novi::EngineParams& p) const
     auto f = [this] (const char* id) { return apvts.getRawParameterValue (id)->load(); };
     auto i = [&] (const char* id) { return juce::roundToInt (f (id)); };
     static constexpr int pow2[4] = { 1, 2, 4, 8 };
+    p.loopTempo = loopTempo.load();
     p.sampleBpm = f ("sampleBpm");
     p.bars = barsChoices[juce::jlimit (0, barsChoices.size() - 1, i ("bars"))].getIntValue();
     p.slicesPerBar = pow2[juce::jlimit (0, 3, i ("slices"))];
@@ -153,6 +188,15 @@ void NoviSliceProcessor::readParams (novi::EngineParams& p) const
     p.attackMs = f ("attack");
     p.releaseMs = f ("release");
     p.outGainDb = f ("gain");
+    p.poly = i ("poly") == 1;
+    p.fullLevel = f ("fullLevel") > 0.5f;
+    p.velSens = f ("velSens") / 100.f;
+    p.noteRepeat = f ("noteRepeat") > 0.5f;
+    p.repeatRate = i ("repeatRate");
+    p.swing = f ("swing") / 100.f;
+    p.sixteenLevels = f ("sixteen") > 0.5f;
+    p.sixteenType = i ("sixteenType");
+    p.sixteenSource = juce::jlimit (0, novi::maxSlices - 1, i ("sixteenSource") - 1);
 }
 
 void NoviSliceProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi)
@@ -171,6 +215,8 @@ void NoviSliceProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     readParams (p);
     engine.setParams (p);
     engine.setSample (playback.get());
+    engine.setSlices (&engineMap);
+    engine.setPads (&pads);
 
     std::array<int, novi::maxSlices> ord {};
     for (int k = 0; k < novi::maxSlices; ++k)
@@ -234,8 +280,18 @@ bool NoviSliceProcessor::loadFile (const juce::File& file)
     return loadFromMemory (data, file.getFileNameWithoutExtension(), file.getFullPathName(), true);
 }
 
+static void setParam (juce::AudioProcessorValueTreeState& apvts, const char* id, float value)
+{
+    if (auto* p = apvts.getParameter (id))
+    {
+        p->beginChangeGesture();
+        p->setValueNotifyingHost (p->convertTo0to1 (value));
+        p->endChangeGesture();
+    }
+}
+
 bool NoviSliceProcessor::loadFromMemory (const juce::MemoryBlock& data, const juce::String& name,
-                                         const juce::String& path, bool guessBars)
+                                         const juce::String& path, bool fresh)
 {
     auto stream = std::make_unique<juce::MemoryInputStream> (data, false);
     std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (std::move (stream)));
@@ -249,23 +305,6 @@ bool NoviSliceProcessor::loadFromMemory (const juce::MemoryBlock& data, const ju
     if (reader->numChannels == 1)
         buf.copyFrom (1, 0, buf, 0, 0, len);
 
-    // UI peaks
-    std::vector<float> newPeaks ((size_t) numPeakColumns * 2, 0.f);
-    for (int c = 0; c < numPeakColumns; ++c)
-    {
-        const int a = (int) ((juce::int64) c * len / numPeakColumns);
-        const int b = juce::jmax (a + 1, (int) ((juce::int64) (c + 1) * len / numPeakColumns));
-        float lo = 0.f, hi = 0.f;
-        for (int i = a; i < b && i < len; ++i)
-        {
-            const float s = 0.5f * (buf.getSample (0, i) + buf.getSample (1, i));
-            lo = juce::jmin (lo, s);
-            hi = juce::jmax (hi, s);
-        }
-        newPeaks[(size_t) c * 2] = lo;
-        newPeaks[(size_t) c * 2 + 1] = hi;
-    }
-
     {
         const juce::ScopedLock l (sampleInfoLock);
         original = std::move (buf);
@@ -273,11 +312,9 @@ bool NoviSliceProcessor::loadFromMemory (const juce::MemoryBlock& data, const ju
         fileData = data;
         sampleName = name;
         samplePath = path;
-        peaks = std::move (newPeaks);
     }
-    ++sampleVersion;
 
-    if (guessBars)
+    if (fresh)
     {
         // Pick the bar count whose tempo matches a BPM in the file name, or lands nearest 100 BPM.
         const double seconds = len / reader->sampleRate;
@@ -297,15 +334,69 @@ bool NoviSliceProcessor::loadFromMemory (const juce::MemoryBlock& data, const ju
             const double err = wanted > 0.0 ? std::abs (bpm - wanted) : std::abs (std::log2 (bpm / 100.0));
             if (err < bestErr) { bestErr = err; best = idx; }
         }
-        if (auto* bars = apvts.getParameter ("bars"))
-            bars->setValueNotifyingHost (bars->convertTo0to1 ((float) best));
+        setParam (apvts, "bars", (float) best);
         // A BPM in the file name becomes the Loop BPM; otherwise go back to auto.
         setLoopBpm (wanted > 0.0 ? wanted : 0.0);
+        setParam (apvts, "trimStart", 0.f);
+        setParam (apvts, "trimEnd", 1.f);
+        manualSlices.clear();
+        if (getChopMode() == novi::chopManual)
+            setParam (apvts, "chopMode", (float) novi::chopGrid);
         resetOrder();
     }
 
-    rebuildPlaybackData();
+    audioChanged (false);
     return true;
+}
+
+void NoviSliceProcessor::audioChanged (bool encodeFile)
+{
+    std::vector<float> mono;
+    {
+        const juce::ScopedLock l (sampleInfoLock);
+        const int len = original.getNumSamples();
+
+        if (encodeFile && len > 0)
+        {
+            // Processed audio replaces the stored file, so the project reopens with the edit.
+            juce::MemoryBlock block;
+            {
+                auto out = std::make_unique<juce::MemoryOutputStream> (block, false);
+                juce::WavAudioFormat wav;
+                std::unique_ptr<juce::AudioFormatWriter> writer (wav.createWriterFor (out.get(), originalRate, 2, 24, {}, 0));
+                if (writer != nullptr)
+                {
+                    out.release();
+                    writer->writeFromAudioSampleBuffer (original, 0, len);
+                }
+            }
+            fileData = block;
+        }
+
+        mono.resize ((size_t) len);
+        for (int i = 0; i < len; ++i)
+            mono[(size_t) i] = 0.5f * (original.getSample (0, i) + original.getSample (1, i));
+
+        std::vector<float> newPeaks ((size_t) numPeakColumns * 2, 0.f);
+        for (int c = 0; c < numPeakColumns && len > 0; ++c)
+        {
+            const int a = (int) ((juce::int64) c * len / numPeakColumns);
+            const int b = juce::jmax (a + 1, (int) ((juce::int64) (c + 1) * len / numPeakColumns));
+            float lo = 0.f, hi = 0.f;
+            for (int i = a; i < b && i < len; ++i)
+            {
+                lo = juce::jmin (lo, mono[(size_t) i]);
+                hi = juce::jmax (hi, mono[(size_t) i]);
+            }
+            newPeaks[(size_t) c * 2] = lo;
+            newPeaks[(size_t) c * 2 + 1] = hi;
+        }
+        peaks = std::move (newPeaks);
+        chopper.analyse (mono.data(), len, originalRate);
+    }
+    ++sampleVersion;
+    rebuildPlaybackData();
+    recomputeSlices();
 }
 
 void NoviSliceProcessor::rebuildPlaybackData()
@@ -344,35 +435,81 @@ void NoviSliceProcessor::rebuildPlaybackData()
     // `old` is freed here, outside the audio thread.
 }
 
-juce::String NoviSliceProcessor::getSampleName() const { const juce::ScopedLock l (sampleInfoLock); return sampleName; }
-bool NoviSliceProcessor::hasSample() const             { const juce::ScopedLock l (sampleInfoLock); return original.getNumSamples() > 0; }
+juce::String NoviSliceProcessor::getSampleName() const  { const juce::ScopedLock l (sampleInfoLock); return sampleName; }
+bool NoviSliceProcessor::hasSample() const              { const juce::ScopedLock l (sampleInfoLock); return original.getNumSamples() > 0; }
 std::vector<float> NoviSliceProcessor::getPeaks() const { const juce::ScopedLock l (sampleInfoLock); return peaks; }
+
+double NoviSliceProcessor::getSampleSeconds() const
+{
+    const juce::ScopedLock l (sampleInfoLock);
+    return original.getNumSamples() / originalRate;
+}
+
+// --- slices ------------------------------------------------------------------------
+
+novi::ChopSettings NoviSliceProcessor::currentChopSettings() const
+{
+    novi::ChopSettings c;
+    readParams (c.grid);
+    auto f = [this] (const char* id) { return apvts.getRawParameterValue (id)->load(); };
+    c.mode = juce::jlimit (0, novi::numChopModes - 1, juce::roundToInt (f ("chopMode")));
+    c.regions = juce::roundToInt (f ("regions"));
+    c.sensitivity = f ("sensitivity") / 100.f;
+    c.minTimeMs = f ("minTime");
+    c.trimStart = f ("trimStart");
+    c.trimEnd = f ("trimEnd");
+    c.zeroSnap = f ("zeroSnap") > 0.5f;
+    return c;
+}
+
+juce::String NoviSliceProcessor::chopHash() const
+{
+    juce::String h;
+    for (auto id : { "chopMode", "regions", "sensitivity", "minTime", "trimStart", "trimEnd", "zeroSnap",
+                     "sampleBpm", "bars", "slices", "triplet" })
+        h << apvts.getRawParameterValue (id)->load() << ";";
+    return h;
+}
+
+void NoviSliceProcessor::timerCallback()
+{
+    if (chopHash() != lastChopHash)
+        recomputeSlices();
+}
+
+void NoviSliceProcessor::recomputeSlices()
+{
+    const auto cs = currentChopSettings();
+    novi::SliceMap map;
+    double tempo = 0.0;
+    {
+        const juce::ScopedLock l (sampleInfoLock);
+        if (original.getNumSamples() > 0)
+        {
+            map = chopper.compute (cs, manualSlices);
+            tempo = chopper.tempo (cs);
+        }
+        uiMap = map;
+    }
+    {
+        const juce::SpinLock::ScopedLockType sl (playbackLock);
+        engineMap = map;
+    }
+    loopTempo.store (tempo);
+    lastChopHash = chopHash();
+    ++sliceVersion;
+}
+
+novi::SliceMap NoviSliceProcessor::getSliceMap() const { const juce::ScopedLock l (sampleInfoLock); return uiMap; }
+int NoviSliceProcessor::getNumSlices() const           { const juce::ScopedLock l (sampleInfoLock); return uiMap.count; }
+int NoviSliceProcessor::getChopMode() const            { return juce::roundToInt (apvts.getRawParameterValue ("chopMode")->load()); }
 
 double NoviSliceProcessor::getLoopBpm() const
 {
-    novi::EngineParams p;
-    readParams (p);
-    const juce::ScopedLock l (sampleInfoLock);
-    if (original.getNumSamples() < 2) return p.sampleBpm >= novi::minSampleBpm ? (double) p.sampleBpm : 0.0;
-    return novi::SliceEngine::tempoOf (p, original.getNumSamples(), originalRate);
-}
-
-int NoviSliceProcessor::getNumSlices() const
-{
-    novi::EngineParams p;
-    readParams (p);
-    const juce::ScopedLock l (sampleInfoLock);
-    return novi::SliceEngine::sliceCount (p, original.getNumSamples(), originalRate);
-}
-
-double NoviSliceProcessor::getSliceFraction() const
-{
-    novi::EngineParams p;
-    readParams (p);
-    const juce::ScopedLock l (sampleInfoLock);
-    const double len = original.getNumSamples();
-    if (len < 2) return 1.0 / novi::SliceEngine::sliceCount (p, 0, originalRate);
-    return novi::SliceEngine::sliceLengthOf (p, len, originalRate) / len;
+    const double t = loopTempo.load();
+    if (t > 0.0) return t;
+    const float set = apvts.getRawParameterValue ("sampleBpm")->load();
+    return set >= novi::minSampleBpm ? (double) set : 0.0;
 }
 
 bool NoviSliceProcessor::isLoopBpmManual() const
@@ -382,18 +519,172 @@ bool NoviSliceProcessor::isLoopBpmManual() const
 
 void NoviSliceProcessor::setLoopBpm (double bpm)
 {
-    if (auto* p = apvts.getParameter ("sampleBpm"))
+    setParam (apvts, "sampleBpm", bpm >= novi::minSampleBpm
+                                      ? (float) juce::jlimit ((double) novi::minSampleBpm, (double) novi::maxSampleBpm, bpm) : 0.f);
+}
+
+void NoviSliceProcessor::ensureManual()
+{
+    if (getChopMode() == novi::chopManual)
+        return;
+    const auto map = getSliceMap();
+    manualSlices.clear();
+    for (int i = 0; i < map.count; ++i)
+        manualSlices.push_back (map.s[(size_t) i]);
+    setParam (apvts, "chopMode", (float) novi::chopManual);
+}
+
+void NoviSliceProcessor::commitManual()
+{
+    std::sort (manualSlices.begin(), manualSlices.end(), [] (const novi::Slice& a, const novi::Slice& b) { return a.start < b.start; });
+    recomputeSlices();
+}
+
+void NoviSliceProcessor::moveSliceEdge (int slice, bool startEdge, double fraction)
+{
+    ensureManual();
+    if (slice < 0 || slice >= (int) manualSlices.size())
+        return;
+    const double minLen = 0.01 * originalRate / juce::jmax (1.0, getSampleSeconds() * originalRate);   // 10 ms
+    const bool link = apvts.getRawParameterValue ("linkSlices")->load() > 0.5f;
+    if (apvts.getRawParameterValue ("zeroSnap")->load() > 0.5f)
+        fraction = chopper.snapToZero (fraction);
+
+    auto& s = manualSlices[(size_t) slice];
+    constexpr double eps = 1e-6;
+    if (startEdge)
     {
-        const float v = bpm >= novi::minSampleBpm ? (float) juce::jlimit ((double) novi::minSampleBpm, (double) novi::maxSampleBpm, bpm) : 0.f;
-        p->beginChangeGesture();
-        p->setValueNotifyingHost (p->convertTo0to1 (v));
-        p->endChangeGesture();
+        double lo = 0.0;
+        const bool touchingPrev = slice > 0 && std::abs (manualSlices[(size_t) slice - 1].end - s.start) < eps;
+        if (link && touchingPrev) lo = manualSlices[(size_t) slice - 1].start + minLen;
+        const double v = juce::jlimit (lo, s.end - minLen, fraction);
+        if (link && touchingPrev) manualSlices[(size_t) slice - 1].end = v;
+        s.start = v;
+    }
+    else
+    {
+        double hi = 1.0;
+        const bool touchingNext = slice + 1 < (int) manualSlices.size() && std::abs (manualSlices[(size_t) slice + 1].start - s.end) < eps;
+        if (link && touchingNext) hi = manualSlices[(size_t) slice + 1].end - minLen;
+        const double v = juce::jlimit (s.start + minLen, hi, fraction);
+        if (link && touchingNext) manualSlices[(size_t) slice + 1].start = v;
+        s.end = v;
+    }
+    commitManual();
+}
+
+int NoviSliceProcessor::addSliceMarker (double fraction)
+{
+    ensureManual();
+    if ((int) manualSlices.size() >= novi::maxSlices)
+        return -1;
+    if (apvts.getRawParameterValue ("zeroSnap")->load() > 0.5f)
+        fraction = chopper.snapToZero (fraction);
+    for (size_t i = 0; i < manualSlices.size(); ++i)
+    {
+        auto& s = manualSlices[i];
+        if (fraction > s.start + 1e-4 && fraction < s.end - 1e-4)
+        {
+            const novi::Slice tail { fraction, s.end };
+            s.end = fraction;
+            manualSlices.insert (manualSlices.begin() + (long) i + 1, tail);
+            commitManual();
+            return (int) i + 1;
+        }
+    }
+    // In a gap: a new slice up to the next slice (or the end of the trim).
+    double end = apvts.getRawParameterValue ("trimEnd")->load();
+    for (auto& s : manualSlices)
+        if (s.start > fraction) { end = std::min (end, s.start); }
+    if (end - fraction < 1e-4)
+        return -1;
+    manualSlices.push_back ({ fraction, end });
+    commitManual();
+    for (size_t i = 0; i < manualSlices.size(); ++i)
+        if (std::abs (manualSlices[i].start - fraction) < 1e-9) return (int) i;
+    return -1;
+}
+
+void NoviSliceProcessor::removeSliceMarker (int slice)
+{
+    ensureManual();
+    if (slice <= 0 || slice >= (int) manualSlices.size())
+        return;
+    manualSlices[(size_t) slice - 1].end = std::max (manualSlices[(size_t) slice - 1].end, manualSlices[(size_t) slice].end);
+    manualSlices.erase (manualSlices.begin() + slice);
+    commitManual();
+}
+
+void NoviSliceProcessor::splitSlice (int slice)
+{
+    ensureManual();
+    if (slice < 0 || slice >= (int) manualSlices.size() || (int) manualSlices.size() >= novi::maxSlices)
+        return;
+    auto& s = manualSlices[(size_t) slice];
+    const double mid = 0.5 * (s.start + s.end);
+    const novi::Slice tail { mid, s.end };
+    s.end = mid;
+    manualSlices.insert (manualSlices.begin() + slice + 1, tail);
+    commitManual();
+}
+
+void NoviSliceProcessor::combineSlice (int slice) { removeSliceMarker (slice); }
+
+void NoviSliceProcessor::clearSlices()
+{
+    ensureManual();
+    auto f = [this] (const char* id) { return (double) apvts.getRawParameterValue (id)->load(); };
+    manualSlices = { { f ("trimStart"), f ("trimEnd") } };
+    commitManual();
+}
+
+void NoviSliceProcessor::setTrim (double a, double b)
+{
+    a = juce::jlimit (0.0, 1.0, a);
+    b = juce::jlimit (0.0, 1.0, b);
+    if (b - a < 0.002) return;
+    setParam (apvts, "trimStart", (float) a);
+    setParam (apvts, "trimEnd", (float) b);
+    recomputeSlices();
+}
+
+// --- pads ------------------------------------------------------------------------------
+
+novi::PadSettings NoviSliceProcessor::getPad (int key) const
+{
+    const juce::SpinLock::ScopedLockType sl (const_cast<juce::SpinLock&> (playbackLock));
+    return pads[(size_t) juce::jlimit (0, novi::maxSlices - 1, key)];
+}
+
+void NoviSliceProcessor::setPad (int key, const novi::PadSettings& p)
+{
+    const juce::SpinLock::ScopedLockType sl (playbackLock);
+    pads[(size_t) juce::jlimit (0, novi::maxSlices - 1, key)] = p;
+}
+
+void NoviSliceProcessor::clearPadFlags (bool mutes, bool solos)
+{
+    const juce::SpinLock::ScopedLockType sl (playbackLock);
+    for (auto& p : pads)
+    {
+        if (mutes) p.mute = false;
+        if (solos) p.solo = false;
     }
 }
 
+bool NoviSliceProcessor::anyPadSolo() const
+{
+    const juce::SpinLock::ScopedLockType sl (const_cast<juce::SpinLock&> (playbackLock));
+    for (auto& p : pads)
+        if (p.solo) return true;
+    return false;
+}
+
+// --- shuffle -------------------------------------------------------------------------
+
 void NoviSliceProcessor::shuffleOrder()
 {
-    const int total = getNumSlices();
+    const int total = juce::jmax (1, getNumSlices());
     std::vector<int> perm ((size_t) total);
     std::iota (perm.begin(), perm.end(), 0);
     auto& rnd = juce::Random::getSystemRandom();
@@ -417,7 +708,148 @@ bool NoviSliceProcessor::isShuffled() const
     return false;
 }
 
-// --- state -----------------------------------------------------------------------
+int NoviSliceProcessor::getKeyForSlice (int slice) const
+{
+    for (int k = 0; k < novi::maxSlices; ++k)
+        if (order[(size_t) k].load() == slice) return k;
+    return slice;
+}
+
+// --- processing ------------------------------------------------------------------------
+
+void NoviSliceProcessor::normalizeSample()
+{
+    {
+        const juce::ScopedLock l (sampleInfoLock);
+        const float peak = original.getMagnitude (0, original.getNumSamples());
+        if (peak <= 1e-6f) return;
+        original.applyGain (0.989f / peak);   // -0.1 dBFS
+    }
+    audioChanged (true);
+}
+
+void NoviSliceProcessor::reverseSample()
+{
+    {
+        const juce::ScopedLock l (sampleInfoLock);
+        if (original.getNumSamples() == 0) return;
+        original.reverse (0, original.getNumSamples());
+    }
+    // Mirror the slice points and the trim so they still line up with the same audio.
+    for (auto& s : manualSlices)
+        s = { 1.0 - s.end, 1.0 - s.start };
+    std::sort (manualSlices.begin(), manualSlices.end(), [] (const novi::Slice& a, const novi::Slice& b) { return a.start < b.start; });
+    const double a = apvts.getRawParameterValue ("trimStart")->load(), b = apvts.getRawParameterValue ("trimEnd")->load();
+    setParam (apvts, "trimStart", (float) (1.0 - b));
+    setParam (apvts, "trimEnd", (float) (1.0 - a));
+    audioChanged (true);
+}
+
+void NoviSliceProcessor::sampleToMono (int mode)
+{
+    {
+        const juce::ScopedLock l (sampleInfoLock);
+        const int len = original.getNumSamples();
+        if (len == 0) return;
+        auto* L = original.getWritePointer (0);
+        auto* R = original.getWritePointer (1);
+        for (int i = 0; i < len; ++i)
+        {
+            const float v = mode == 1 ? L[i] : mode == 2 ? R[i] : 0.5f * (L[i] + R[i]);
+            L[i] = R[i] = v;
+        }
+    }
+    audioChanged (true);
+}
+
+// --- export ----------------------------------------------------------------------------
+
+static juce::String safeName (juce::String s)
+{
+    s = juce::File::createLegalFileName (s.trim());
+    return s.isEmpty() ? juce::String ("NoviSlice") : s;
+}
+
+void NoviSliceProcessor::writeSliceWav (int slice, const juce::File& file) const
+{
+    const juce::ScopedLock l (sampleInfoLock);
+    if (slice < 0 || slice >= uiMap.count || original.getNumSamples() == 0)
+        return;
+    const int len = original.getNumSamples();
+    const int a = juce::jlimit (0, len - 1, (int) std::lround (uiMap.s[(size_t) slice].start * len));
+    const int b = juce::jlimit (a + 1, len, (int) std::lround (uiMap.s[(size_t) slice].end * len));
+
+    file.deleteFile();
+    auto out = file.createOutputStream();
+    if (out == nullptr) return;
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::AudioFormatWriter> writer (wav.createWriterFor (out.get(), originalRate, 2, 24, {}, 0));
+    if (writer == nullptr) return;
+    out.release();
+    writer->writeFromAudioSampleBuffer (original, a, b - a);
+}
+
+int NoviSliceProcessor::exportSlicesTo (const juce::File& folder)
+{
+    if (! folder.isDirectory() && ! folder.createDirectory())
+        return 0;
+    const auto name = safeName (getSampleName());
+    const int count = getNumSlices();
+    for (int i = 0; i < count; ++i)
+        writeSliceWav (i, folder.getChildFile (name + " slice " + juce::String (i + 1).paddedLeft ('0', 2) + ".wav"));
+    return count;
+}
+
+static juce::File tempFolder()
+{
+    auto dir = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("NoviSlice");
+    dir.createDirectory();
+    return dir;
+}
+
+juce::File NoviSliceProcessor::writeSliceToTempFile (int key)
+{
+    const int slice = getSliceForKey (key);
+    auto f = tempFolder().getChildFile (safeName (getSampleName()) + " slice " + juce::String (slice + 1).paddedLeft ('0', 2) + ".wav");
+    writeSliceWav (slice, f);
+    return f;
+}
+
+juce::File NoviSliceProcessor::writeMidiPatternToTempFile()
+{
+    const auto map = getSliceMap();
+    const double tempo = getLoopBpm() > 0.0 ? getLoopBpm() : 120.0;
+    const double seconds = getSampleSeconds();
+    const double origin = map.count > 0 ? map.s[0].start : 0.0;
+    constexpr int ppq = 960;
+
+    juce::MidiMessageSequence seq;
+    seq.addEvent (juce::MidiMessage::textMetaEvent (3, getSampleName().isEmpty() ? "NoviSlice" : getSampleName()), 0);
+    seq.addEvent (juce::MidiMessage::tempoMetaEvent ((int) std::lround (60000000.0 / tempo)), 0);
+    seq.addEvent (juce::MidiMessage::timeSignatureMetaEvent (4, 4), 0);
+    auto toTicks = [&] (double fraction) { return (fraction - origin) * seconds * tempo / 60.0 * ppq; };
+    for (int s = 0; s < map.count; ++s)
+    {
+        const int note = novi::noteForSliceKey (getKeyForSlice (s));
+        if (note < 0) continue;
+        const double on = toTicks (map.s[(size_t) s].start);
+        const double off = juce::jmax (on + 10.0, toTicks (map.s[(size_t) s].end) - 4.0);
+        seq.addEvent (juce::MidiMessage::noteOn (1, note, (juce::uint8) 100), on);
+        seq.addEvent (juce::MidiMessage::noteOff (1, note), off);
+    }
+    seq.updateMatchedPairs();
+
+    juce::MidiFile mf;
+    mf.setTicksPerQuarterNote (ppq);
+    mf.addTrack (seq);
+    auto f = tempFolder().getChildFile (safeName (getSampleName()) + " pattern.mid");
+    f.deleteFile();
+    if (auto out = f.createOutputStream())
+        mf.writeTo (*out);
+    return f;
+}
+
+// --- state -----------------------------------------------------------------------------
 
 void NoviSliceProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
@@ -436,8 +868,39 @@ void NoviSliceProcessor::getStateInformation (juce::MemoryBlock& destData)
         ord.add (juce::String (order[(size_t) k].load()));
     sampleTree.setProperty ("order", ord.joinIntoString (","), nullptr);
 
-    state.removeChild (state.getChildWithName ("Sample"), nullptr);
+    juce::StringArray manual;
+    for (auto& s : manualSlices)
+        manual.add (juce::String (s.start, 9) + ":" + juce::String (s.end, 9));
+    sampleTree.setProperty ("manual", manual.joinIntoString (","), nullptr);
+
+    juce::ValueTree padTree ("Pads");
+    for (int k = 0; k < novi::maxSlices; ++k)
+    {
+        const auto p = getPad (k);
+        if (p.isDefault()) continue;
+        juce::ValueTree t ("Pad");
+        t.setProperty ("key", k, nullptr);
+        t.setProperty ("tune", p.tune, nullptr);
+        t.setProperty ("level", p.levelDb, nullptr);
+        t.setProperty ("pan", p.pan, nullptr);
+        t.setProperty ("cutoff", p.cutoffHz, nullptr);
+        t.setProperty ("tail", p.tailMs, nullptr);
+        t.setProperty ("reverse", p.reverse, nullptr);
+        t.setProperty ("mute", p.mute, nullptr);
+        t.setProperty ("solo", p.solo, nullptr);
+        t.setProperty ("loop", p.loop, nullptr);
+        t.setProperty ("playMode", p.playMode, nullptr);
+        t.setProperty ("muteGroup", p.muteGroup, nullptr);
+        t.setProperty ("repeats", p.repeats, nullptr);
+        t.setProperty ("motion", p.motion, nullptr);
+        t.setProperty ("cycles", p.cycles, nullptr);
+        padTree.appendChild (t, nullptr);
+    }
+
+    for (auto name : { "Sample", "Pads" })
+        state.removeChild (state.getChildWithName (name), nullptr);
     state.appendChild (sampleTree, nullptr);
+    state.appendChild (padTree, nullptr);
 
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
@@ -453,11 +916,47 @@ void NoviSliceProcessor::setStateInformation (const void* data, int sizeInBytes)
         return;
 
     auto sampleTree = state.getChildWithName ("Sample");
+    auto padTree = state.getChildWithName ("Pads");
     state.removeChild (sampleTree, nullptr);
+    state.removeChild (padTree, nullptr);
     apvts.replaceState (state);
 
+    novi::PadArray newPads {};
+    for (auto t : padTree)
+    {
+        const int k = t["key"];
+        if (k < 0 || k >= novi::maxSlices) continue;
+        auto& p = newPads[(size_t) k];
+        p.tune = t["tune"];
+        p.levelDb = t["level"];
+        p.pan = t["pan"];
+        p.cutoffHz = t.getProperty ("cutoff", 20000.f);
+        p.tailMs = t["tail"];
+        p.reverse = t["reverse"];
+        p.mute = t["mute"];
+        p.solo = t["solo"];
+        p.loop = t["loop"];
+        p.playMode = t["playMode"];
+        p.muteGroup = t["muteGroup"];
+        p.repeats = t["repeats"];
+        p.motion = t["motion"];
+        p.cycles = t["cycles"];
+    }
+    {
+        const juce::SpinLock::ScopedLockType sl (playbackLock);
+        pads = newPads;
+    }
+
+    manualSlices.clear();
     if (sampleTree.isValid())
     {
+        for (auto token : juce::StringArray::fromTokens (sampleTree["manual"].toString(), ",", ""))
+        {
+            const auto a = token.upToFirstOccurrenceOf (":", false, false).getDoubleValue();
+            const auto b = token.fromFirstOccurrenceOf (":", false, false).getDoubleValue();
+            if (b > a) manualSlices.push_back ({ a, b });
+        }
+
         const juce::String name = sampleTree["name"], path = sampleTree["path"];
         juce::MemoryBlock block;
         bool loaded = false;
@@ -475,6 +974,7 @@ void NoviSliceProcessor::setStateInformation (const void* data, int sizeInBytes)
         for (int k = 0; k < novi::maxSlices; ++k)
             order[(size_t) k].store (k < tokens.size() ? juce::jlimit (0, novi::maxSlices - 1, tokens[k].getIntValue()) : k);
     }
+    recomputeSlices();
 }
 
 juce::AudioProcessorEditor* NoviSliceProcessor::createEditor() { return new NoviSliceEditor (*this); }

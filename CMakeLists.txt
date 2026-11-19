@@ -57,6 +57,7 @@ juce_add_binary_data(NoviSliceAssets SOURCES
 
 target_sources(NoviSlice PRIVATE
     Source/SliceEngine.cpp
+    Source/Chopper.cpp
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp)
 
@@ -82,15 +83,23 @@ target_link_libraries(NoviSlice
         juce::juce_recommended_warning_flags)
 
 # Engine unit test (no JUCE needed): cmake --build build --target EngineTest && ./build/EngineTest
-add_executable(EngineTest Tests/EngineTest.cpp Source/SliceEngine.cpp)
+add_executable(EngineTest Tests/EngineTest.cpp Source/SliceEngine.cpp Source/Chopper.cpp)
 
 # Renders the editor to a PNG for checking the layout: -DNOVISLICE_SCREENSHOT=ON
 if(NOVISLICE_SCREENSHOT)
     juce_add_console_app(RenderUI PRODUCT_NAME "RenderUI")
-    target_sources(RenderUI PRIVATE Tests/RenderUI.cpp Source/SliceEngine.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp)
+    target_sources(RenderUI PRIVATE Tests/RenderUI.cpp Source/SliceEngine.cpp Source/Chopper.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp)
     target_compile_definitions(RenderUI PRIVATE
         JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_USE_MP3AUDIOFORMAT=1
         JucePlugin_Name="NoviSlice" JUCE_STANDALONE_APPLICATION=1 JUCE_MODAL_LOOPS_PERMITTED=1)
     target_link_libraries(RenderUI PRIVATE NoviSliceAssets juce::juce_audio_utils juce::juce_audio_formats
+        juce::juce_recommended_config_flags)
+
+    juce_add_console_app(ProcessorTest PRODUCT_NAME "ProcessorTest")
+    target_sources(ProcessorTest PRIVATE Tests/ProcessorTest.cpp Source/SliceEngine.cpp Source/Chopper.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp)
+    target_compile_definitions(ProcessorTest PRIVATE
+        JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_USE_MP3AUDIOFORMAT=1
+        JucePlugin_Name="NoviSlice" JUCE_STANDALONE_APPLICATION=1 JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_link_libraries(ProcessorTest PRIVATE NoviSliceAssets juce::juce_audio_utils juce::juce_audio_formats
         juce::juce_recommended_config_flags)
 endif()

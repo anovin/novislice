@@ -68,7 +68,10 @@ void SliceEngine::reset()
     for (auto& v : voices)
         v = Voice();
     perf.fill (false);
-    heldNotes.fill (false);
+    for (auto& h : held) h = Held();
+    motionCounter.fill (0);
+    repeatPos = 0.0;
+    nextTick = 0;
     semisInit = false;
     tapeStopProgress = diveProgress = sweepProgress = 0.0;
     tapeRate = 1.0;
@@ -151,19 +154,10 @@ int SliceEngine::sliceCount (const EngineParams& p, double lengthSamples, double
     return wanted;
 }
 
-int SliceEngine::numSlices() const
+const PadSettings& SliceEngine::pad (int key) const
 {
-    return sliceCount (params, sample != nullptr ? sample->length() : 0, sr);
-}
-
-double SliceEngine::loopBpm() const
-{
-    return tempoOf (params, sample != nullptr ? sample->length() : 0, sr);
-}
-
-double SliceEngine::sliceLength() const
-{
-    return sliceLengthOf (params, sample != nullptr ? sample->length() : 0, sr);
+    static const PadSettings defaults;
+    return (pads != nullptr && key >= 0 && key < maxSlices) ? (*pads)[(size_t) key] : defaults;
 }
 
 float SliceEngine::randomUni()
@@ -208,12 +202,32 @@ void SliceEngine::noteOn (int note, float velocity)
         return;
     }
 
-    const int key = sliceKeyForNote (note);
-    if (key >= 0 && key < numSlices())
+    int key = sliceKeyForNote (note);
+    if (key < 0)
+        return;
+
+    // 16 Levels: the first 16 pads all play one pad, at 16 rising levels.
+    int level = -1;
+    if (params.sixteenLevels && key < 16)
     {
-        heldNotes[(size_t) note] = true;
-        startVoice (key, note, velocity);
+        level = key;
+        key = std::clamp (params.sixteenSource, 0, maxSlices - 1);
     }
+
+    auto& h = held[(size_t) note];
+    h.on = true;
+    h.key = key;
+    h.level = level;
+    h.velocity = velocity;
+    h.pendingNoteOff = false;
+    h.lastTrigger = sampleClock;
+
+    if (pad (key).playMode == playNoteOff && level < 0)
+    {
+        h.pendingNoteOff = true;        // sounds when the pad is released
+        return;
+    }
+    trigger (key, note, velocity, level, false);
 }
 
 void SliceEngine::noteOff (int note)
@@ -228,10 +242,19 @@ void SliceEngine::noteOff (int note)
         return;
     }
 
-    heldNotes[(size_t) note] = false;
+    auto& h = held[(size_t) note];
+    const bool wasPending = h.on && h.pendingNoteOff;
+    h.on = false;
+    h.pendingNoteOff = false;
+    if (wasPending)
+    {
+        startVoice (h.key, note, h.velocity, h.level, true);
+        return;
+    }
+
     const float relSamples = std::max (msToSamples (5.f), msToSamples (params.releaseMs));
     for (auto& v : voices)
-        if (v.active && ! v.releasing && v.note == note)
+        if (v.active && ! v.releasing && v.note == note && ! v.oneShot)
         {
             v.releasing = true;
             v.releaseStep = std::max (v.env, 0.001f) / relSamples;
@@ -241,20 +264,58 @@ void SliceEngine::noteOff (int note)
 void SliceEngine::allNotesOff()
 {
     for (int n = 0; n < 128; ++n)
-        if (heldNotes[(size_t) n])
+        if (held[(size_t) n].on)
             noteOff (n);
     perf.fill (false);
 }
 
-void SliceEngine::startVoice (int key, int note, float velocity)
+void SliceEngine::trigger (int key, int note, float velocity, int level, bool)
 {
-    if (sample == nullptr || sample->length() < 16)
+    if (key < 0 || key >= maxSlices)
         return;
 
-    // Choke whatever is playing (mono slicer), with a short crossfade.
+    // Pad mute / solo
+    bool anySolo = false;
+    if (pads != nullptr)
+        for (auto& p : *pads) anySolo = anySolo || p.solo;
+    const auto& pd = pad (key);
+    if (pd.mute || (anySolo && ! pd.solo))
+        return;
+
+    startVoice (key, note, velocity, level, false);
+}
+
+void SliceEngine::startVoice (int key, int note, float velocity, int level, bool forceOneShot)
+{
+    if (sample == nullptr || sample->length() < 16 || slices == nullptr)
+        return;
+    const int total = numSlices();
+    if (total <= 0 || key < 0 || key >= maxSlices || (key >= total && level < 0))
+        return;
+
+    const auto& pd = pad (key);
+
+    // Which slice: shuffle order, then slice motion.
+    int base = sliceOrder[(size_t) key];
+    if (base < 0 || base >= total) base = std::min (key, total - 1);
+    int slice = base;
+    if (pd.motion != motionOff && total > 1)
+    {
+        const int cycles = pd.cycles > 0 ? std::min (pd.cycles, total) : total;
+        int step;
+        if (pd.motion == motionNext)
+            step = motionCounter[(size_t) key]++ % cycles;
+        else
+            step = (int) ((randomUni() * 0.5f + 0.5f) * cycles) % cycles;
+        slice = (base + step) % total;
+    }
+
+    // Choke: mono cuts everything; poly cuts the same pad and its mute group.
     const float chokeSamples = std::max (msToSamples (2.f), msToSamples (params.xfadeMs));
+    const int pressed = level >= 0 ? level : key;
     for (auto& v : voices)
-        if (v.active && ! v.releasing)
+        if (v.active && ! v.releasing
+            && (! params.poly || v.uiKey == pressed || (pd.muteGroup > 0 && v.muteGroup == pd.muteGroup)))
         {
             v.releasing = true;
             v.releaseStep = std::max (v.env, 0.001f) / chokeSamples;
@@ -271,24 +332,64 @@ void SliceEngine::startVoice (int key, int note, float velocity)
                 target = &v;
     }
 
-    const int total = numSlices();
-    int slice = sliceOrder[(size_t) key];
-    if (slice < 0 || slice >= total)
-        slice = key;
-
     const double len = sample->length();
-    const double sliceLen = sliceLength();
+    const auto& sl = slices->s[(size_t) slice];
+
+    float vel = std::clamp (velocity, 0.f, 1.f);
+    double semis = pd.tune;
+    float cutoff = pd.cutoffHz;
+    float decayMs = 0.f;
+    if (level >= 0)
+    {
+        const float t = level / 15.f;
+        switch (params.sixteenType)
+        {
+            case sixteenVelocity: vel = (level + 1) / 16.f; break;
+            case sixteenTune:     semis += level - 8; break;                        // pad 9 = original pitch
+            case sixteenFilter:   cutoff = std::min (cutoff, 150.f * std::pow (133.f, t)); break;   // 150 Hz .. 20 kHz
+            case sixteenDecay:    decayMs = 40.f * std::pow (50.f, t); break;      // 40 ms .. 2 s
+            default: break;
+        }
+    }
+    else if (params.fullLevel)
+        vel = 1.f;
 
     Voice& v = *target;
     v = Voice();
     v.active = true;
     v.key = key;
+    v.uiKey = level >= 0 ? level : key;
     v.note = note;
     v.slice = slice;
-    v.velocity = std::clamp (velocity, 0.f, 1.f);
-    v.regionStart = std::min (slice * sliceLen, len - 16.0);
-    v.regionEnd = params.full ? len : std::min (len, (slice + 1) * sliceLen);
-    v.head = perf[fxReverse] ? v.regionEnd - 1.0 : v.regionStart;
+    const float sens = std::clamp (params.velSens, 0.f, 1.f);
+    v.velocity = (1.f - sens) + sens * vel;
+    v.regionStart = std::min (sl.start * len, len - 16.0);
+    double end = (params.full ? slices->regionEnd : sl.end) * len;
+    end += pd.tailMs * 0.001 * sr;
+    v.regionEnd = std::clamp (end, v.regionStart + 16.0, len);
+    v.reverse = pd.reverse;
+    v.oneShot = forceOneShot || pd.playMode == playOneShot;
+    v.loop = params.loop || (pd.loop && pd.playMode == playNoteOn);
+    v.repeats = pd.repeats;
+    v.muteGroup = pd.muteGroup;
+    v.tuneRatio = std::pow (2.0, semis / 12.0);
+    const double angle = (std::clamp (pd.pan, -1.f, 1.f) + 1.0) * 0.25 * 3.141592653589793;
+    const float level01 = std::pow (10.f, pd.levelDb / 20.f);
+    v.gainL = (float) (std::cos (angle) * 1.41421356) * level01;
+    v.gainR = (float) (std::sin (angle) * 1.41421356) * level01;
+    if (decayMs > 0.f)
+        v.decayStep = 1.f / std::max (1.f, msToSamples (decayMs));
+    if (cutoff < 19900.f)
+    {
+        v.filtered = true;
+        const float g = (float) std::tan (3.141592653589793 * std::clamp ((double) cutoff, 20.0, sr * 0.45) / sr);
+        v.fk = 2.f - 1.96f * 0.15f;
+        v.fa1 = 1.f / (1.f + g * (g + v.fk));
+        v.fa2 = g * v.fa1;
+        v.fa3 = g * v.fa2;
+    }
+    const bool backwards = v.reverse != perf[fxReverse];
+    v.head = backwards ? v.regionEnd - 1.0 : v.regionStart;
     v.env = params.attackMs > 0.f ? 0.f : 1.f;
     v.age = ++voiceCounter;
 
@@ -322,7 +423,7 @@ void SliceEngine::process (float* left, float* right, int n, const Transport& t)
     const double beatSamples = 60.0 / hostBpm * sr;
 
     double speed = 1.0;
-    const double lb = loopBpm();
+    const double lb = params.loopTempo;
     if (params.sync && lb > 0.0)
         speed = std::clamp (hostBpm / lb, 0.25, 4.0);
 
@@ -374,10 +475,48 @@ void SliceEngine::process (float* left, float* right, int n, const Transport& t)
 
     Voice* lead = nullptr;
 
+    // Note Repeat grid (in beats), with MPC swing on every other step of straight rates.
+    static constexpr double repeatBeats[7] = { 1.0, 0.5, 0.25, 0.125, 1.0 / 3.0, 1.0 / 6.0, 1.0 / 12.0 };
+    const int rateIndex = std::clamp (params.repeatRate, 0, 6);
+    const double stepBeats = repeatBeats[rateIndex];
+    const double swingOffset = rateIndex <= 3 ? (std::clamp ((double) params.swing, 0.5, 0.75) - 0.5) * 2.0 : 0.0;
+    auto tickPos = [&] (long long k) { return (double) k + ((k & 1) ? swingOffset : 0.0); };
+    bool anyHeld = false;
+    for (auto& h : held) anyHeld = anyHeld || (h.on && ! h.pendingNoteOff);
+
     for (int i = 0; i < n; ++i)
     {
         const double ppqNow = t.ppq + i / beatSamples;
         const bool synced = t.playing && t.hasPpq;
+        sampleClock += 1.0;
+
+        // --- note repeat ---------------------------------------------------------
+        if (params.noteRepeat)
+        {
+            repeatPos += 1.0 / beatSamples;
+            const double beatsNow = synced ? ppqNow : repeatPos;
+            const double p = beatsNow / stepBeats;
+            if (synced != repeatSynced || p < tickPos (nextTick - 1) - 0.5 || p > tickPos (nextTick) + 2.0)
+            {
+                nextTick = (long long) std::floor (p) + 1;   // transport moved: line up with the grid
+                repeatSynced = synced;
+            }
+            if (p >= tickPos (nextTick))
+            {
+                ++nextTick;
+                if (anyHeld)
+                    for (int note = 0; note < 128; ++note)
+                    {
+                        auto& h = held[(size_t) note];
+                        // skip a tick that lands right after the pad was hit
+                        if (h.on && ! h.pendingNoteOff && sampleClock - h.lastTrigger > stepBeats * beatSamples * 0.4)
+                        {
+                            h.lastTrigger = sampleClock;
+                            trigger (h.key, note, h.velocity, h.level, true);
+                        }
+                    }
+            }
+        }
 
         // --- playback modifiers --------------------------------------------------
         currentSemis = params.pitchSemis + (currentSemis - params.pitchSemis) * glideCoef;
@@ -403,11 +542,10 @@ void SliceEngine::process (float* left, float* right, int n, const Transport& t)
 
         const double semis = currentSemis - 12.0 * diveProgress * diveProgress;
         const double pitchRatio = std::pow (2.0, semis / 12.0);
-        const double dir = perf[fxReverse] ? -1.0 : 1.0;
         // Pitch never changes the tempo: the read head always moves at the loop's (synced) speed,
         // and pitch is applied by the grains. Without Key Lock, Sync still repitches like a sampler.
         const double headRate = speed * modRate;
-        const double grainPitch = pitchRatio * (params.keyLock ? 1.0 : speed) * modRate;
+        const double basePitch = pitchRatio * (params.keyLock ? 1.0 : speed) * modRate;
         const bool granularNow = granularParams || std::abs (semis) > 0.001;
 
         // --- voices --------------------------------------------------------------
@@ -421,8 +559,10 @@ void SliceEngine::process (float* left, float* right, int n, const Transport& t)
                 if (! v.active)
                     continue;
                 anyActive = true;
+                const double dir = (v.reverse != perf[fxReverse]) ? -1.0 : 1.0;
+                const double grainPitch = basePitch * v.tuneRatio;
 
-                if (granularNow && ! v.granular)
+                if ((granularNow || std::abs (v.tuneRatio - 1.0) > 1e-9) && ! v.granular)
                 {
                     // Switch this voice to the grain reader, phase-aligned with the head.
                     v.granular = true;
@@ -467,20 +607,43 @@ void SliceEngine::process (float* left, float* right, int n, const Transport& t)
                 else if (v.env < 1.f)
                     v.env = std::min (1.f, v.env + 1.f / attackSamples);
 
-                const float g = v.env * edge * v.velocity;
-                mixL += sL * g;
-                mixR += sR * g;
+                if (v.decayStep > 0.f)
+                {
+                    v.decayGain -= v.decayStep;
+                    if (v.decayGain <= 0.f) { v.active = false; continue; }
+                }
+
+                if (v.filtered)
+                {
+                    float* io[2] = { &sL, &sR };
+                    for (int c = 0; c < 2; ++c)
+                    {
+                        const float x = *io[c];
+                        const float v3 = x - v.f2[c];
+                        const float v1 = v.fa1 * v.f1[c] + v.fa2 * v3;
+                        const float v2 = v.f2[c] + v.fa2 * v.f1[c] + v.fa3 * v3;
+                        v.f1[c] = 2.f * v1 - v.f1[c];
+                        v.f2[c] = 2.f * v2 - v.f2[c];
+                        *io[c] = v2;
+                    }
+                }
+
+                const float g = v.env * edge * v.velocity * v.decayGain;
+                mixL += sL * g * v.gainL;
+                mixR += sR * g * v.gainR;
 
                 v.head += headRate * dir;
                 const double regionLen = v.regionEnd - v.regionStart;
-                if (dir > 0 && v.head >= v.regionEnd)
+                const bool pastEnd = (dir > 0 && v.head >= v.regionEnd) || (dir < 0 && v.head < v.regionStart);
+                if (pastEnd)
                 {
-                    if (params.loop) { v.head -= regionLen; v.grainAnchor[0] -= regionLen; v.grainAnchor[1] -= regionLen; }
-                    else v.active = false;
-                }
-                else if (dir < 0 && v.head < v.regionStart)
-                {
-                    if (params.loop) { v.head += regionLen; v.grainAnchor[0] += regionLen; v.grainAnchor[1] += regionLen; }
+                    ++v.plays;
+                    const bool again = v.loop && (v.repeats <= 0 || v.plays < v.repeats);
+                    if (again)
+                    {
+                        const double shift = dir > 0 ? -regionLen : regionLen;
+                        v.head += shift; v.grainAnchor[0] += shift; v.grainAnchor[1] += shift;
+                    }
                     else v.active = false;
                 }
 
@@ -648,7 +811,7 @@ void SliceEngine::process (float* left, float* right, int n, const Transport& t)
     if (lead != nullptr && sample != nullptr && sample->length() > 0)
     {
         uiActiveSlice = lead->slice;
-        uiActiveKey = lead->key;
+        uiActiveKey = lead->uiKey;
         uiPlayhead = (float) std::clamp (lead->head / sample->length(), 0.0, 1.0);
     }
     else
