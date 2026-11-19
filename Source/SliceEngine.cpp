@@ -132,24 +132,23 @@ double SliceEngine::sliceLengthOf (const EngineParams& p, double lengthSamples, 
     {
         // The grid follows the tempo: one bar = 4 beats at the loop's BPM.
         const double bar = 240.0 / tempoOf (p, lengthSamples, sampleRate) * sampleRate;
-        double len = bar / slicesPerBar (p);
-        // Never more than maxSlices across the loop.
-        if (lengthSamples / len > maxSlices + 0.01)
-            len = lengthSamples / maxSlices;
-        return std::max (1.0, len);
+        return std::max (16.0, bar / slicesPerBar (p));
     }
     return lengthSamples / sliceCount (p, lengthSamples, sampleRate);
 }
 
 int SliceEngine::sliceCount (const EngineParams& p, double lengthSamples, double sampleRate)
 {
+    const int wanted = std::clamp (std::max (1, p.bars) * slicesPerBar (p), 1, maxSlices);
     if (p.sampleBpm >= minSampleBpm && lengthSamples >= 2)
     {
+        // BARS bars from the start of the sample, but only the slices the sample actually reaches
+        // (a sliver of tail shorter than 10% of a slice is ignored).
         const double len = sliceLengthOf (p, lengthSamples, sampleRate);
-        // Ignore a sliver of tail shorter than 10% of a slice.
-        return std::clamp ((int) std::ceil (lengthSamples / len - 0.1), 1, maxSlices);
+        const int fit = std::max (1, (int) std::ceil (lengthSamples / len - 0.1));
+        return std::min (wanted, fit);
     }
-    return std::clamp (std::max (1, p.bars) * slicesPerBar (p), 1, maxSlices);
+    return wanted;
 }
 
 int SliceEngine::numSlices() const
@@ -327,7 +326,7 @@ void SliceEngine::process (float* left, float* right, int n, const Transport& t)
     if (params.sync && lb > 0.0)
         speed = std::clamp (hostBpm / lb, 0.25, 4.0);
 
-    const bool granular = params.keyLock || params.textureAmount > 0.001f;
+    const bool granularParams = params.keyLock || params.textureAmount > 0.001f;
     const double grainLen = std::max (256.0, (double) msToSamples (params.grainMs));
     const float edgeSamples = std::max (16.f, msToSamples (params.xfadeMs));
     const float attackSamples = std::max (1.f, msToSamples (params.attackMs));
@@ -405,8 +404,11 @@ void SliceEngine::process (float* left, float* right, int n, const Transport& t)
         const double semis = currentSemis - 12.0 * diveProgress * diveProgress;
         const double pitchRatio = std::pow (2.0, semis / 12.0);
         const double dir = perf[fxReverse] ? -1.0 : 1.0;
-        const double headRate = params.keyLock ? speed * modRate : speed * pitchRatio * modRate;
-        const double grainPitch = params.keyLock ? pitchRatio * modRate : headRate;
+        // Pitch never changes the tempo: the read head always moves at the loop's (synced) speed,
+        // and pitch is applied by the grains. Without Key Lock, Sync still repitches like a sampler.
+        const double headRate = speed * modRate;
+        const double grainPitch = pitchRatio * (params.keyLock ? 1.0 : speed) * modRate;
+        const bool granularNow = granularParams || std::abs (semis) > 0.001;
 
         // --- voices --------------------------------------------------------------
         float mixL = 0.f, mixR = 0.f;
@@ -420,8 +422,18 @@ void SliceEngine::process (float* left, float* right, int n, const Transport& t)
                     continue;
                 anyActive = true;
 
+                if (granularNow && ! v.granular)
+                {
+                    // Switch this voice to the grain reader, phase-aligned with the head.
+                    v.granular = true;
+                    v.grainAge[0] = 0.0;
+                    v.grainAnchor[0] = v.head;
+                    v.grainAge[1] = grainLen * 0.5;
+                    v.grainAnchor[1] = v.head + grainLen * 0.5 * (grainPitch - headRate) * dir;
+                }
+
                 float sL, sR;
-                if (granular)
+                if (v.granular)
                 {
                     sL = sR = 0.f;
                     for (int g = 0; g < 2; ++g)

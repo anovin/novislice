@@ -3,7 +3,7 @@
 
 using APVTS = juce::AudioProcessorValueTreeState;
 
-const juce::StringArray NoviSliceProcessor::barsChoices   { "1", "2", "4", "8" };
+const juce::StringArray NoviSliceProcessor::barsChoices   { "1", "2", "3", "4", "5", "6", "7", "8", "16" };
 const juce::StringArray NoviSliceProcessor::slicesChoices { "1", "2", "4", "8" };
 const juce::StringArray NoviSliceProcessor::lfoChoices    { "OFF", "1/1", "1/2", "1/4", "1/8", "1/16" };
 const juce::StringArray NoviSliceProcessor::modeChoices   { "LP", "HP", "BP" };
@@ -52,7 +52,7 @@ APVTS::ParameterLayout NoviSliceProcessor::createLayout()
                 const float v = t.trim().getFloatValue();
                 return v >= novi::minSampleBpm ? juce::jmin (v, novi::maxSampleBpm) : 0.f;
             })));
-    choice ("bars", "Bars", barsChoices, 2);
+    choice ("bars", "Bars", barsChoices, 3);
     choice ("slices", "Slices per bar", slicesChoices, 2);
     toggle ("triplet", "Triplet", false);
     toggle ("full", "Full", false);
@@ -127,7 +127,7 @@ void NoviSliceProcessor::readParams (novi::EngineParams& p) const
     auto i = [&] (const char* id) { return juce::roundToInt (f (id)); };
     static constexpr int pow2[4] = { 1, 2, 4, 8 };
     p.sampleBpm = f ("sampleBpm");
-    p.bars = pow2[juce::jlimit (0, 3, i ("bars"))];
+    p.bars = barsChoices[juce::jlimit (0, barsChoices.size() - 1, i ("bars"))].getIntValue();
     p.slicesPerBar = pow2[juce::jlimit (0, 3, i ("slices"))];
     p.triplet = f ("triplet") > 0.5f;
     p.full = f ("full") > 0.5f;
@@ -287,10 +287,13 @@ bool NoviSliceProcessor::loadFromMemory (const juce::MemoryBlock& data, const ju
             const double v = token.getDoubleValue();
             if (token.containsOnly ("0123456789.") && v >= 50.0 && v <= 200.0) { wanted = v; break; }
         }
-        int best = 2; double bestErr = 1e9;
-        for (int idx = 0; idx < 4; ++idx)
+        int best = barsChoices.indexOf ("4"); double bestErr = 1e9;
+        for (int idx = 0; idx < barsChoices.size(); ++idx)
         {
-            const double bpm = (1 << idx) * 4.0 * 60.0 / seconds;
+            const int barCount = barsChoices[idx].getIntValue();
+            if (barCount != 1 && barCount != 2 && barCount != 4 && barCount != 8)
+                continue;   // loops are almost always 1, 2, 4 or 8 bars
+            const double bpm = barCount * 4.0 * 60.0 / seconds;
             const double err = wanted > 0.0 ? std::abs (bpm - wanted) : std::abs (std::log2 (bpm / 100.0));
             if (err < bestErr) { bestErr = err; best = idx; }
         }

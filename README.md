@@ -21,7 +21,7 @@ The sample is saved inside your FL project, so projects still open if the file m
 | **FULL** | Keeps playing past the end of the slice to the end of the loop. |
 | **LOOP** | Loops the slice while the key is held. |
 | **SYNC** | Plays the loop at FL Studio's tempo, using the Loop BPM. |
-| **KEY LOCK** | Keeps the original pitch while syncing (granular). Turn it off for the classic sampler sound, where slowing down also lowers the pitch. |
+| **KEY LOCK** | Keeps the original pitch when Sync changes the speed. With it off you get the classic sampler sound, where slowing down to match FL Studio also lowers the pitch. The Pitch knob never changes the tempo either way. |
 | **SHUFFLE / RESET** | Shuffles which slice each key plays, or puts them back in order. Pads show the slice they play. |
 | Click the screen | Auditions the slice you click. |
 
@@ -30,7 +30,7 @@ Playback is mono: a new slice cuts off the one before it, with a short crossfade
 ## Sound shaping
 
 - **Texture:** *Amount* scatters the grains for a smeared, granular sound. *Grain* sets the grain size used by Key Lock and Texture. *Vinyl* adds crackle and hiss while slices play.
-- **Play:** *Pitch* (±24 semitones), *Glide* between pitch changes, and *X-Fade* (the fade at slice edges and between slices).
+- **Play:** *Pitch* (±24 semitones) changes the pitch but never the tempo, so slices stay in time. *Glide* smooths pitch changes, and *X-Fade* sets the fade at slice edges and between slices.
 - **Filter:** LP, HP or BP with resonance. An LFO synced to the tempo (1/1 to 1/16) can move the cutoff.
 - **Crush:** bit depth and sample-rate reduction.
 - **Delay:** tempo-synced (1/16 to 1/2, including dotted values), with mix and feedback.

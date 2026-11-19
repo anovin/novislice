@@ -23,6 +23,8 @@ int main (int argc, char** argv)
         midi.addEvent (juce::MidiMessage::noteOn (1, novi::firstPerfKey + novi::fxThrow, 1.f), 0);
         for (int i = 0; i < 8; ++i) { proc.processBlock (buf, midi); midi.clear(); }
         if (auto* p = proc.apvts.getParameter ("sync")) p->setValueNotifyingHost (1.f);
+        if (argc > 4)
+            if (auto* p = proc.apvts.getParameter ("bars")) p->setValueNotifyingHost (p->convertTo0to1 ((float) NoviSliceProcessor::barsChoices.indexOf (argv[4])));
         if (auto* p = proc.apvts.getParameter ("vinyl")) p->setValueNotifyingHost (0.3f);
         if (auto* p = proc.apvts.getParameter ("pitch")) p->setValueNotifyingHost (p->convertTo0to1 (4.f));
         if (auto* p = proc.apvts.getParameter ("dlyMix")) p->setValueNotifyingHost (0.25f);

@@ -40,7 +40,7 @@ int sliceKeyForNote (int note);
 struct EngineParams
 {
     float sampleBpm = 0.f;     // tempo of the loop as set by the user; below minSampleBpm = auto (from BARS)
-    int   bars = 4;            // 1, 2, 4, 8 (used to work out the tempo when sampleBpm is auto)
+    int   bars = 4;            // how many bars to slice (with sampleBpm set: counted at that tempo from the start)
     int   slicesPerBar = 4;    // 1, 2, 4, 8
     bool  triplet = false;     // 2/4/8 per bar become 3/6/12
     bool  full = false;        // keep playing past the slice to the end of the loop
@@ -129,6 +129,7 @@ private:
         float  velocity = 1.f;
         float  env = 0.f;
         bool   releasing = false;
+        bool   granular = false;     // reading through the grain engine (pitch, key lock, texture)
         float  releaseStep = 0.f;
         uint64_t age = 0;
         // granular reader

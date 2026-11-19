@@ -292,6 +292,7 @@ void LcdDisplay::paint (juce::Graphics& g)
     {
         const int activeSlice = proc.engine.uiActiveSlice.load();
         const float sliceW = (float) (wave.getWidth() * proc.getSliceFraction());
+        const float regionEnd = wave.getX() + juce::jmin (wave.getWidth(), sliceW * total);   // past this: not sliced
 
         if (activeSlice >= 0 && activeSlice < total)
         {
@@ -318,7 +319,7 @@ void LcdDisplay::paint (juce::Graphics& g)
             }
             const float x = wave.getX() + c * pitch;
             const int slice = juce::jlimit (0, total - 1, (int) ((x - wave.getX()) / sliceW));
-            g.setColour (slice == activeSlice ? col::lcdTop : col::lcdInk);
+            g.setColour (x >= regionEnd ? col::lcdDim.withAlpha (0.55f) : slice == activeSlice ? col::lcdTop : col::lcdInk);
             const float top = mid - (hi / maxAbs) * half, bottom = mid - (lo / maxAbs) * half;
             g.fillRect (x, std::floor (top), 2.f, juce::jmax (1.f, std::ceil (bottom - top)));
         }
@@ -340,6 +341,17 @@ void LcdDisplay::paint (juce::Graphics& g)
                 g.drawText (juce::String (s + 1).paddedLeft ('0', 2), Rectangle<float> (x, numbers.getY(), juce::jmin (sliceW * (total > 16 ? 2.f : 1.f), wave.getRight() - x), numbers.getHeight()),
                             juce::Justification::centred, false);
             }
+        }
+
+        if (regionEnd < wave.getRight() - 2.f)
+        {
+            // end of the sliced bars
+            g.setColour (col::lcdInk);
+            g.fillRect (regionEnd - 1.f, wave.getY() - 4.f, 2.f, wave.getHeight() + 8.f);
+            g.setFont (fonts.mono (12.f));
+            g.setColour (col::lcdDim);
+            g.drawText ("NOT SLICED", Rectangle<float> (regionEnd + 4.f, numbers.getY(), wave.getRight() - regionEnd - 4.f, numbers.getHeight()),
+                        juce::Justification::centredLeft, false);
         }
 
         const float ph = proc.engine.uiPlayhead.load();
@@ -1002,15 +1014,6 @@ void FacePanel::paintOverChildren (juce::Graphics& g)
 void FacePanel::refresh()
 {
     lcd.refresh();
-    {
-        auto& barsBox = *choices["bars"].box;
-        const bool autoTempo = ! proc.isLoopBpmManual();
-        if (barsBox.isEnabled() != autoTempo)
-        {
-            barsBox.setEnabled (autoTempo);
-            barsBox.setColour (juce::ComboBox::textColourId, autoTempo ? col::lcdInk : col::lcdDim);
-        }
-    }
     const int total = proc.getNumSlices();
     bankB.setEnabled (total > 16);
     if (total <= 16 && bank == 1)

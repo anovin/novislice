@@ -215,6 +215,13 @@ int main()
         q.sampleBpm = 90.f; b.setParams (q);
         CHECK (b.numSlices() == 12, "90 BPM over 8 s = 3 bars = 12 slices");
         CHECK (std::abs (b.sliceLength() - sr * 240.0 / 90.0 / 4.0) < 1.0, "slice = a 16th at 90 BPM");
+        q.sampleBpm = 120.f; q.bars = 2; b.setParams (q);
+        CHECK (b.numSlices() == 8, "BARS still sets how many bars to slice with a BPM set");
+        CHECK (std::abs (b.sliceLength() - sr * 0.5) < 1.0, "...and the slices stay a 16th at 120 BPM");
+        q.bars = 3; b.setParams (q);
+        CHECK (b.numSlices() == 12, "3 bars x 4 = 12 slices");
+        q.bars = 16; b.setParams (q);
+        CHECK (b.numSlices() == 16, "more bars than the sample has: only the slices that exist");
         q.sampleBpm = 0.f; q.bars = 2; b.setParams (q);
         CHECK (std::abs (b.loopBpm() - 60.0) < 1e-6, "auto falls back to BARS");
 
@@ -230,6 +237,38 @@ int main()
         b.noteOn (noteForSliceKey (0), 1.f);
         o = render (b, (int) (sr * 0.7), fast);
         CHECK (std::abs (o[(size_t) (sr * 0.6)] - 0.10f) < 0.01f, "same tempo plays at normal speed (1 s slice spans two steps)");
+    }
+
+    // Pitch keeps the tempo: +12 without key lock = 880 Hz, and the slice still lasts 0.5 s
+    {
+        SliceEngine b;
+        b.prepare (sr, 512);
+        EngineParams q;
+        q.bars = 4; q.slicesPerBar = 4; q.sync = false; q.pitchSemis = 12.f;
+        auto sine = makeSine (440.0, 8.0);
+        b.setSample (&sine);
+        b.setParams (q);
+        Transport tt;
+        b.noteOn (noteForSliceKey (0), 1.f);
+        auto o = render (b, (int) (sr * 0.7), tt);
+        double f = estimateHz (o, 4800, 19200);
+        CHECK (std::abs (f - 880.0) < 20.0, "pitch +12 sounds an octave up");
+        float early = 0.f, late = 0.f;
+        for (int i = (int) (sr * 0.40); i < (int) (sr * 0.45); ++i) early = std::max (early, std::abs (o[(size_t) i]));
+        for (int i = (int) (sr * 0.55); i < (int) (sr * 0.70); ++i) late = std::max (late, std::abs (o[(size_t) i]));
+        CHECK (early > 0.2f, "pitched slice still playing at 0.4 s");
+        CHECK (late < 0.05f, "pitched slice ends on time (0.5 s), so the tempo is kept");
+        b.noteOff (noteForSliceKey (0));
+        render (b, 2000, tt);
+
+        q.pitchSemis = -12.f; b.setParams (q);
+        b.noteOn (noteForSliceKey (0), 1.f);
+        o = render (b, (int) (sr * 0.7), tt);
+        f = estimateHz (o, 4800, 19200);
+        CHECK (std::abs (f - 220.0) < 10.0, "pitch -12 sounds an octave down");
+        late = 0.f;
+        for (int i = (int) (sr * 0.55); i < (int) (sr * 0.70); ++i) late = std::max (late, std::abs (o[(size_t) i]));
+        CHECK (late < 0.05f, "pitched-down slice also ends on time");
     }
 
     // Every effect at once, every knob at an extreme: no NaN, no blow-up
