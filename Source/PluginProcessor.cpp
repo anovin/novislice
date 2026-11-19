@@ -67,7 +67,7 @@ APVTS::ParameterLayout NoviSliceProcessor::createLayout()
     toggle ("loop", "Loop", false);
 
     l.add (floatParam ("texAmount", "Texture", { 0.f, 100.f, 0.1f }, 0.f, pct));
-    l.add (floatParam ("texSize", "Grain size", skewed (20.f, 250.f, 90.f, 0.1f), 90.f, msPlain));
+    l.add (floatParam ("texSize", "Grain size", skewed (20.f, 250.f, 90.f, 0.1f), 60.f, msPlain));
     l.add (floatParam ("vinyl", "Vinyl", { 0.f, 100.f, 0.1f }, 0.f, pct));
 
     l.add (floatParam ("pitch", "Pitch", { -24.f, 24.f, 1.f }, 0.f,

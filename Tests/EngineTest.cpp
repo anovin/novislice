@@ -240,18 +240,24 @@ int main()
         Rig r (makeSine (440.0, 8.0));    // auto tempo = 120
         r.p.sync = true; r.apply();
         r.t.bpm = 60.0;
-        auto o = r.play (0, 0.5);
-        CHECK (std::abs (estimateHz (o, 4800, 19200) - 220.0) < 8.0, "sync without key lock: half speed = octave down");
-        r.p.keyLock = true; r.apply();
+        auto o = r.play (0, 1.2);
+        CHECK (std::abs (estimateHz (o, 4800, 19200) - 440.0) < 12.0, "sync at half the tempo keeps the tone");
+        CHECK (peakIn (o, 0.85, 0.95) > 0.2f && peakIn (o, 1.05, 1.2) < 0.05f, "...and the slice stretches to 1 s");
+        r.t.bpm = 180.0;
         o = r.play (0, 0.5);
-        CHECK (std::abs (estimateHz (o, 4800, 19200) - 440.0) < 12.0, "key lock keeps pitch");
+        CHECK (std::abs (estimateHz (o, 2400, 12000) - 440.0) < 15.0, "sync faster keeps the tone");
+        CHECK (peakIn (o, 0.36, 0.45) < 0.05f, "...and the slice shortens to 1/3 s");
         r.t.bpm = 120.0;
         r.p.pitchSemis = 12.f; r.apply();
         o = r.play (0, 0.5);
-        CHECK (std::abs (estimateHz (o, 4800, 19200) - 880.0) < 20.0, "+12 with key lock");
-        r.p.keyLock = false; r.p.sync = false; r.apply();
+        CHECK (std::abs (estimateHz (o, 4800, 19200) - 880.0) < 20.0, "+12 at the loop's own tempo");
+        r.t.bpm = 60.0;
+        o = r.play (0, 0.5);
+        CHECK (std::abs (estimateHz (o, 4800, 19200) - 880.0) < 20.0, "+12 while synced slower is still +12");
+        r.t.bpm = 120.0;
+        r.p.sync = false; r.apply();
         o = r.play (0, 0.7);
-        CHECK (std::abs (estimateHz (o, 4800, 19200) - 880.0) < 20.0, "pitch +12 without key lock");
+        CHECK (std::abs (estimateHz (o, 4800, 19200) - 880.0) < 20.0, "pitch +12 without sync");
         CHECK (peakIn (o, 0.40, 0.45) > 0.2f && peakIn (o, 0.55, 0.7) < 0.05f, "pitch keeps the tempo (slice still 0.5 s)");
         r.p.pitchSemis = 0.f; r.apply();
 

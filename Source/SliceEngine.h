@@ -88,7 +88,7 @@ struct EngineParams
     bool  triplet = false;     // 2/4/8 per bar become 3/6/12
     bool  full = false;        // keep playing past the slice to the end of the loop
     bool  sync = true;         // stretch the loop to the host tempo
-    bool  keyLock = false;     // keep pitch when syncing (granular)
+    bool  keyLock = true;      // unused: sync always keeps the pitch (kept for old projects)
     bool  loop = false;        // loop the slice while the key is held
 
     float textureAmount = 0.f; // 0..1 grain scatter

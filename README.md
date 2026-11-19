@@ -22,8 +22,7 @@ The sample is saved inside your FL project, so projects still open if the file m
 | **TRIPLET** | Switches to a triplet grid: 2, 4 or 8 slices per bar become 3, 6 or 12. |
 | **FULL** | Keeps playing past the end of the slice to the end of the loop. |
 | **LOOP** | Loops the slice while the key is held. |
-| **SYNC** | Plays the loop at FL Studio's tempo, using the Loop BPM. |
-| **KEY LOCK** | Keeps the original pitch when Sync changes the speed. With it off you get the classic sampler sound, where slowing down to match FL Studio also lowers the pitch. The Pitch knob never changes the tempo either way. |
+| **SYNC** | Plays the loop at FL Studio's tempo, using the Loop BPM, without changing its pitch: an 80 BPM loop in a 95 BPM session plays faster but keeps the same tone. Turn Sync off to always play the loop at its own speed. (Tip: if stretched drums sound doubled, lower *Grain* on the SOUND page.) |
 | **SHUFFLE / RESET** | Shuffles which slice each key plays, or puts them back in order. Pads show the slice they play. |
 | Click the screen | Auditions the slice you click and selects its pad. |
 
@@ -74,7 +73,7 @@ Pads show small tags for their settings: **M** mute, **S** solo, **1** one shot,
 
 ## Sound page
 
-- **Texture:** *Amount* scatters the grains for a smeared, granular sound. *Grain* sets the grain size used by Key Lock and Texture. *Vinyl* adds crackle and hiss while slices play.
+- **Texture:** *Amount* scatters the grains for a smeared, granular sound. *Grain* sets the grain size used when Sync stretches the loop, for the Pitch knob, and for Texture (smaller suits drums). *Vinyl* adds crackle and hiss while slices play.
 - **Play:** *Pitch* (±24 semitones) changes the pitch but never the tempo, so slices stay in time. *Glide* smooths pitch changes, and *X-Fade* sets the fade at slice edges and between slices.
 - **Filter:** LP, HP or BP with resonance. An LFO synced to the tempo (1/1 to 1/16) can move the cutoff.
 - **Crush:** bit depth and sample-rate reduction.

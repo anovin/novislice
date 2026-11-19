@@ -408,7 +408,6 @@ void LcdDisplay::paint (juce::Graphics& g)
     auto on = [this] (const char* id) { return proc.apvts.getRawParameterValue (id)->load() > 0.5f; };
     flag ("FULL", on ("full"));
     flag ("LOOP", on ("loop"));
-    flag ("KEY", on ("keylock"));
     flag ("SYNC", on ("sync"));
     flag ("RPT", on ("noteRepeat"));
     flag ("16L", on ("sixteen"));
@@ -932,7 +931,6 @@ FacePanel::FacePanel (NoviSliceProcessor& p) : proc (p)
     addToggle ("full", "FULL", -1);
     addToggle ("loop", "LOOP", -1);
     addToggle ("sync", "SYNC", -1);
-    addToggle ("keylock", "KEY LOCK", -1);
 
     // ---- SOUND ----
     addKnob ("texAmount", "AMOUNT", pageSound);
@@ -1276,12 +1274,11 @@ void FacePanel::resized()
         bpmBox.setBounds (x, y + 4, 70, 26); x += 70 + 8;
         byId["bars"]->setBounds (x, y + 4, 48, 26); x += 48 + 6;
         byId["slices"]->setBounds (x, y + 4, 48, 26); x += 48 + 10;
-        next (*byId["triplet"], 58);
-        next (*byId["full"], 46);
-        next (*byId["loop"], 46);
-        next (*byId["sync"], 48);
-        next (*byId["keylock"], 64, 10);
-        next (shuffleButton, 60, 6);
+        next (*byId["triplet"], 66);
+        next (*byId["full"], 58);
+        next (*byId["loop"], 58);
+        next (*byId["sync"], 58, 12);
+        next (shuffleButton, 66, 6);
         resetButton.setBounds (x, y, 728 - x, h);
     }
 
@@ -1445,7 +1442,7 @@ void FacePanel::paintChassis (juce::Graphics& g)
     g.drawText ("BARS", byId["bars"]->getBounds().translated (0, 28).withHeight (12), juce::Justification::centred, false);
     g.drawText ("PER BAR", byId["slices"]->getBounds().translated (0, 28).withHeight (12), juce::Justification::centred, false);
     g.drawText ("SLICE ORDER", shuffleButton.getBounds().getUnion (resetButton.getBounds()).translated (0, 38).withHeight (12), juce::Justification::centred, false);
-    g.drawText ("PLAYBACK", byId["triplet"]->getBounds().getUnion (byId["keylock"]->getBounds()).translated (0, 38).withHeight (12),
+    g.drawText ("PLAYBACK", byId["triplet"]->getBounds().getUnion (byId["sync"]->getBounds()).translated (0, 38).withHeight (12),
                 juce::Justification::centred, false);
 
     // sections for this page

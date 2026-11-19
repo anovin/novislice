@@ -427,7 +427,9 @@ void SliceEngine::process (float* left, float* right, int n, const Transport& t)
     if (params.sync && lb > 0.0)
         speed = std::clamp (hostBpm / lb, 0.25, 4.0);
 
-    const bool granularParams = params.keyLock || params.textureAmount > 0.001f;
+    // SYNC changes the speed but never the pitch: whenever the speed differs from the loop's own, the grains
+    // keep the original tone.
+    const bool granularParams = params.textureAmount > 0.001f || std::abs (speed - 1.0) > 1e-6;
     const double grainLen = std::max (256.0, (double) msToSamples (params.grainMs));
     const float edgeSamples = std::max (16.f, msToSamples (params.xfadeMs));
     const float attackSamples = std::max (1.f, msToSamples (params.attackMs));
@@ -545,7 +547,7 @@ void SliceEngine::process (float* left, float* right, int n, const Transport& t)
         // Pitch never changes the tempo: the read head always moves at the loop's (synced) speed,
         // and pitch is applied by the grains. Without Key Lock, Sync still repitches like a sampler.
         const double headRate = speed * modRate;
-        const double basePitch = pitchRatio * (params.keyLock ? 1.0 : speed) * modRate;
+        const double basePitch = pitchRatio * modRate;
         const bool granularNow = granularParams || std::abs (semis) > 0.001;
 
         // --- voices --------------------------------------------------------------
