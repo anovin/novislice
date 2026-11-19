@@ -19,7 +19,7 @@ The sample is saved inside your FL project, so projects still open if the file m
 |---|---|
 | **PLAY** | Plays the loaded sample from start to finish (between the trim points), through Sync, Pitch and the effects. With **LOOP** on it goes round and round seamlessly (turn LOOP off and it finishes the current pass). It lights while playing; click again to stop. The screen shows the time. |
 | **LOOP BPM** | The tempo of the sample. Drag it up or down, click the arrows (Shift for 0.1 steps), or double-click and type it. With Sync on, the loop plays at FL Studio's tempo. Clicking the up arrow while it shows AUTO locks in the guessed tempo. Go below 40, or type nothing, to return to AUTO. |
-| **BARS / PER BAR** | The BPM grid: how many bars to slice (1–8 or 16) and how many slices per bar (1–8), up to 32 slices. With a Loop BPM set, bars are counted at that tempo, and anything past them shows as NOT SLICED. On AUTO, BARS also sets the guessed tempo. Slices 17–32 are on pad bank **B**. |
+| **BARS / PER BAR** | The BPM grid: how many bars to slice (1–8 or 16) and how many slices per bar (1, 2, 4, 8 or 16), up to 32 slices. Changing either one (or TRIPLET) chops the sample at those beat intervals straight away: if the CHOP page was on TRANSIENT, REGIONS or MANUAL, it switches back to BPM GRID (your manual markers are kept for when you switch back to MANUAL). With a Loop BPM set, bars are counted at that tempo, and anything past them shows as NOT SLICED. On AUTO, BARS also sets the guessed tempo. Slices 17–32 are on pad bank **B**. |
 | **TRIPLET** | Switches to a triplet grid: 2, 4 or 8 slices per bar become 3, 6 or 12. |
 | **FULL** | Keeps playing past the end of the slice to the end of the loop. |
 | **LOOP** | Loops the slice while the key is held. |

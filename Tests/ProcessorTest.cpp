@@ -47,6 +47,26 @@ int main (int argc, char** argv)
     std::printf ("transient slices found: %d\n", proc.getNumSlices());
     CHECK (proc.getNumSlices() >= 8, "transient mode finds the drum hits");
 
+    // Changing BARS / PER BAR while in another chop mode switches to the beat grid and re-chops
+    if (auto* p = proc.apvts.getParameter ("chopMode")) p->setValueNotifyingHost (p->convertTo0to1 ((float) novi::chopTransient));
+    proc.recomputeSlices();
+    juce::MessageManager::getInstance()->runDispatchLoopUntil (200);
+    if (auto* p = proc.apvts.getParameter ("slices")) p->setValueNotifyingHost (p->convertTo0to1 (3.f));   // 8 per bar
+    juce::MessageManager::getInstance()->runDispatchLoopUntil (300);
+    CHECK (proc.getChopMode() == novi::chopGrid, "PER BAR switches the chop mode to BPM GRID");
+    CHECK (proc.getNumSlices() == 16, "2 bars x 8 per bar = 16 slices");
+    if (auto* p = proc.apvts.getParameter ("bars")) p->setValueNotifyingHost (p->convertTo0to1 ((float) NoviSliceProcessor::barsChoices.indexOf ("1")));
+    juce::MessageManager::getInstance()->runDispatchLoopUntil (300);
+    CHECK (proc.getNumSlices() == 8, "1 bar x 8 per bar = 8 slices");
+    if (auto* p = proc.apvts.getParameter ("slices")) p->setValueNotifyingHost (p->convertTo0to1 (4.f));   // 16 per bar
+    juce::MessageManager::getInstance()->runDispatchLoopUntil (300);
+    const auto gm = proc.getSliceMap();
+    CHECK (proc.getNumSlices() == 16 && std::abs ((gm.s[1].start - gm.s[0].start) * proc.getSampleSeconds() - 60.0 / 90.0 / 4.0) < 1e-3,
+           "16 per bar: slices every 16th note at 90 BPM");
+    if (auto* p = proc.apvts.getParameter ("bars")) p->setValueNotifyingHost (p->convertTo0to1 ((float) NoviSliceProcessor::barsChoices.indexOf ("2")));
+    if (auto* p = proc.apvts.getParameter ("slices")) p->setValueNotifyingHost (p->convertTo0to1 (2.f));
+    juce::MessageManager::getInstance()->runDispatchLoopUntil (300);
+
     // pads + state round trip
     novi::PadSettings pd; pd.tune = 3.5f; pd.mute = true; pd.playMode = novi::playOneShot; pd.motion = novi::motionNext; pd.cycles = 4;
     proc.setPad (5, pd);

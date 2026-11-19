@@ -6,7 +6,7 @@
 using APVTS = juce::AudioProcessorValueTreeState;
 
 const juce::StringArray NoviSliceProcessor::barsChoices   { "1", "2", "3", "4", "5", "6", "7", "8", "16" };
-const juce::StringArray NoviSliceProcessor::slicesChoices { "1", "2", "4", "8" };
+const juce::StringArray NoviSliceProcessor::slicesChoices { "1", "2", "4", "8", "16" };
 const juce::StringArray NoviSliceProcessor::lfoChoices    { "OFF", "1/1", "1/2", "1/4", "1/8", "1/16" };
 const juce::StringArray NoviSliceProcessor::modeChoices   { "LP", "HP", "BP" };
 const juce::StringArray NoviSliceProcessor::delayChoices  { "1/16", "1/8", "1/8D", "1/4", "1/4D", "1/2" };
@@ -129,6 +129,7 @@ NoviSliceProcessor::NoviSliceProcessor()
     for (int i = 0; i < novi::maxSlices; ++i)
         order[(size_t) i].store (i);
     lastChopHash = chopHash();
+    lastGridKey = gridKey();
     startTimerHz (15);
 }
 
@@ -161,11 +162,11 @@ void NoviSliceProcessor::readParams (novi::EngineParams& p) const
 {
     auto f = [this] (const char* id) { return apvts.getRawParameterValue (id)->load(); };
     auto i = [&] (const char* id) { return juce::roundToInt (f (id)); };
-    static constexpr int pow2[4] = { 1, 2, 4, 8 };
+    static constexpr int pow2[5] = { 1, 2, 4, 8, 16 };
     p.loopTempo = loopTempo.load();
     p.sampleBpm = f ("sampleBpm");
     p.bars = barsChoices[juce::jlimit (0, barsChoices.size() - 1, i ("bars"))].getIntValue();
-    p.slicesPerBar = pow2[juce::jlimit (0, 3, i ("slices"))];
+    p.slicesPerBar = pow2[juce::jlimit (0, 4, i ("slices"))];
     p.triplet = f ("triplet") > 0.5f;
     p.full = f ("full") > 0.5f;
     p.sync = f ("sync") > 0.5f;
@@ -351,6 +352,7 @@ bool NoviSliceProcessor::loadFromMemory (const juce::MemoryBlock& data, const ju
         if (getChopMode() == novi::chopManual)
             setParam (apvts, "chopMode", (float) novi::chopGrid);
         resetOrder();
+        lastGridKey = gridKey();   // the guessed bar count isn't a request to change the chop mode
     }
 
     audioChanged (false);
@@ -479,8 +481,28 @@ juce::String NoviSliceProcessor::chopHash() const
     return h;
 }
 
+juce::String NoviSliceProcessor::gridKey() const
+{
+    juce::String k;
+    for (auto id : { "bars", "slices", "triplet" })
+        k << apvts.getRawParameterValue (id)->load() << ";";
+    return k;
+}
+
 void NoviSliceProcessor::timerCallback()
 {
+    // Touching BARS, PER BAR or TRIPLET means "chop to the beat grid": switch to BPM GRID if another
+    // chop mode (transient, regions, manual) was in charge, so the change is heard right away.
+    const auto g = gridKey();
+    if (g != lastGridKey)
+    {
+        lastGridKey = g;
+        if (getChopMode() != novi::chopGrid)
+        {
+            setParam (apvts, "chopMode", (float) novi::chopGrid);
+            ++gridSwitchCount;
+        }
+    }
     if (chopHash() != lastChopHash)
         recomputeSlices();
 }
@@ -928,6 +950,7 @@ void NoviSliceProcessor::setStateInformation (const void* data, int sizeInBytes)
     state.removeChild (sampleTree, nullptr);
     state.removeChild (padTree, nullptr);
     apvts.replaceState (state);
+    lastGridKey = gridKey();
 
     novi::PadArray newPads {};
     for (auto t : padTree)

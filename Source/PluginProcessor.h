@@ -92,6 +92,7 @@ public:
     static constexpr int numPeakColumns = 1200;
     std::atomic<int> sampleVersion { 0 };         // bumps when the audio changes
     std::atomic<int> sliceVersion { 0 };          // bumps when the slices change
+    std::atomic<int> gridSwitchCount { 0 };       // bumps when BARS/PER BAR switched the chop mode to BPM GRID
     std::atomic<float> outputPeak { 0.f };
     std::atomic<double> hostBpm { 0.0 };          // last tempo reported by the DAW
 
@@ -112,6 +113,8 @@ private:
     void commitManual();
     void timerCallback() override;
     juce::String chopHash() const;
+    juce::String gridKey() const;
+    juce::String lastGridKey;
     void writeSliceWav (int slice, const juce::File& file) const;
 
     juce::AudioFormatManager formats;

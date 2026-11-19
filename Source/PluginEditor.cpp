@@ -1087,6 +1087,7 @@ FacePanel::FacePanel (NoviSliceProcessor& p) : proc (p)
         addAndMakeVisible (*perfButtons[(size_t) i]);
     }
 
+    lastGridSwitch = proc.gridSwitchCount.load();
     setSize (designW, designH);
     setPage (pageSound);
     loadPadControls();
@@ -1602,6 +1603,11 @@ void FacePanel::paintOverChildren (juce::Graphics& g)
 
 void FacePanel::refresh()
 {
+    if (const int gs = proc.gridSwitchCount.load(); gs != lastGridSwitch)
+    {
+        lastGridSwitch = gs;
+        lcd.flash ("CHOP MODE: BPM GRID");
+    }
     lcd.refresh();
     const int total = proc.getNumSlices();
     bankB.setEnabled (total > 16 || selectedPad >= 16);

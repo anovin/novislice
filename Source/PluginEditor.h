@@ -233,6 +233,7 @@ private:
     int bank = 0;
     int selectedPad = 0;
     float meterLevel = 0.f;
+    int lastGridSwitch = 0;
 };
 
 class NoviSliceEditor : public juce::AudioProcessorEditor,
