@@ -199,6 +199,39 @@ int main()
     e.noteOff (noteForSliceKey (0));
     render (e, 4800, t);
 
+    // Loop BPM set by hand: the grid and the sync follow it
+    {
+        SliceEngine b;
+        b.prepare (sr, 512);
+        EngineParams q;
+        q.slicesPerBar = 4; q.sync = false;
+        auto loop = makeStepSample();          // 8 s; 4 bars if it's 120 BPM, 2 bars at 60
+        b.setSample (&loop);
+        q.sampleBpm = 120.f; b.setParams (q);
+        CHECK (b.numSlices() == 16, "120 BPM over 8 s = 4 bars = 16 slices");
+        CHECK (std::abs (b.loopBpm() - 120.0) < 1e-6, "loop BPM is the one set");
+        q.sampleBpm = 60.f; b.setParams (q);
+        CHECK (b.numSlices() == 8, "60 BPM over 8 s = 2 bars = 8 slices");
+        q.sampleBpm = 90.f; b.setParams (q);
+        CHECK (b.numSlices() == 12, "90 BPM over 8 s = 3 bars = 12 slices");
+        CHECK (std::abs (b.sliceLength() - sr * 240.0 / 90.0 / 4.0) < 1.0, "slice = a 16th at 90 BPM");
+        q.sampleBpm = 0.f; q.bars = 2; b.setParams (q);
+        CHECK (std::abs (b.loopBpm() - 60.0) < 1e-6, "auto falls back to BARS");
+
+        // Sync: loop set to 60 BPM, host at 120 -> slice 0 (2 s at 60 BPM / 8 slices = 1 s) plays in 0.5 s
+        q.sampleBpm = 60.f; q.sync = true; b.setParams (q);
+        Transport fast; fast.bpm = 120.0;
+        b.noteOn (noteForSliceKey (0), 1.f);
+        auto o = render (b, (int) (sr * 0.7), fast);
+        CHECK (std::abs (o[(size_t) (sr * 0.6)]) < 1e-4f, "set BPM syncs to the host tempo");
+        b.noteOff (noteForSliceKey (0));
+        render (b, 2000, fast);
+        fast.bpm = 60.0;
+        b.noteOn (noteForSliceKey (0), 1.f);
+        o = render (b, (int) (sr * 0.7), fast);
+        CHECK (std::abs (o[(size_t) (sr * 0.6)] - 0.10f) < 0.01f, "same tempo plays at normal speed (1 s slice spans two steps)");
+    }
+
     // Every effect at once, every knob at an extreme: no NaN, no blow-up
     p.textureAmount = 1.f; p.grainMs = 20.f; p.vinyl = 1.f; p.pitchSemis = 24.f; p.glideMs = 300.f;
     p.cutoffHz = 200.f; p.resonance = 1.f; p.lfoRate = 5; p.lfoDepth = 1.f; p.filterMode = 2;

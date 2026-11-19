@@ -90,6 +90,33 @@ private:
     bool lit = false, pressed = false, latched = false;
 };
 
+// Loop BPM: an LCD readout with up/down arrows. Drag to change, double-click to type.
+class BpmBox : public juce::Component, public juce::SettableTooltipClient
+{
+public:
+    BpmBox (NoviSliceProcessor&, const NoviFonts&);
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
+
+private:
+    double startingTempo() const;
+    void set (double bpm);
+    void commitText();
+    juce::Rectangle<float> arrowArea() const;
+
+    NoviSliceProcessor& proc;
+    const NoviFonts& fonts;
+    juce::ParameterAttachment attachment;
+    juce::TextEditor editor;
+    float value = 0.f;
+    double dragStart = 0.0;
+    bool dragging = false;
+};
+
 class FacePanel : public juce::Component
 {
 public:
@@ -138,6 +165,8 @@ private:
     NoviLook look { fonts };
 
     LcdDisplay lcd { proc, fonts };
+    BpmBox bpmBox { proc, fonts };
+    juce::TooltipWindow tooltips { this, 600 };
     juce::TextButton loadButton { "LOAD" }, shuffleButton { "SHUFFLE" }, resetButton { "RESET" };
     juce::TextButton bankA { "A" }, bankB { "B" };
     std::map<juce::String, Knob> knobs;

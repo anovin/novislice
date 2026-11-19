@@ -43,6 +43,15 @@ APVTS::ParameterLayout NoviSliceProcessor::createLayout()
     auto toggle = [&] (const juce::String& id, const juce::String& name, bool def)
     { l.add (std::make_unique<juce::AudioParameterBool> (juce::ParameterID { id, 1 }, name, def)); };
 
+    l.add (std::make_unique<juce::AudioParameterFloat> (juce::ParameterID { "sampleBpm", 1 }, "Loop BPM",
+        juce::NormalisableRange<float> (0.f, novi::maxSampleBpm, 0.01f), 0.f,
+        juce::AudioParameterFloatAttributes()
+            .withStringFromValueFunction ([] (float v, int) { return v < novi::minSampleBpm ? juce::String ("AUTO") : juce::String (v, 1); })
+            .withValueFromStringFunction ([] (const juce::String& t)
+            {
+                const float v = t.trim().getFloatValue();
+                return v >= novi::minSampleBpm ? juce::jmin (v, novi::maxSampleBpm) : 0.f;
+            })));
     choice ("bars", "Bars", barsChoices, 2);
     choice ("slices", "Slices per bar", slicesChoices, 2);
     toggle ("triplet", "Triplet", false);
@@ -117,6 +126,7 @@ void NoviSliceProcessor::readParams (novi::EngineParams& p) const
     auto f = [this] (const char* id) { return apvts.getRawParameterValue (id)->load(); };
     auto i = [&] (const char* id) { return juce::roundToInt (f (id)); };
     static constexpr int pow2[4] = { 1, 2, 4, 8 };
+    p.sampleBpm = f ("sampleBpm");
     p.bars = pow2[juce::jlimit (0, 3, i ("bars"))];
     p.slicesPerBar = pow2[juce::jlimit (0, 3, i ("slices"))];
     p.triplet = f ("triplet") > 0.5f;
@@ -171,7 +181,7 @@ void NoviSliceProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     if (auto* ph = getPlayHead())
         if (auto pos = ph->getPosition())
         {
-            if (auto bpm = pos->getBpm()) t.bpm = *bpm;
+            if (auto bpm = pos->getBpm()) { t.bpm = *bpm; hostBpm.store (*bpm); }
             t.playing = pos->getIsPlaying();
             if (auto ppq = pos->getPpqPosition()) { t.ppq = *ppq; t.hasPpq = true; }
         }
@@ -286,6 +296,8 @@ bool NoviSliceProcessor::loadFromMemory (const juce::MemoryBlock& data, const ju
         }
         if (auto* bars = apvts.getParameter ("bars"))
             bars->setValueNotifyingHost (bars->convertTo0to1 ((float) best));
+        // A BPM in the file name becomes the Loop BPM; otherwise go back to auto.
+        setLoopBpm (wanted > 0.0 ? wanted : 0.0);
         resetOrder();
     }
 
@@ -335,19 +347,45 @@ std::vector<float> NoviSliceProcessor::getPeaks() const { const juce::ScopedLock
 
 double NoviSliceProcessor::getLoopBpm() const
 {
+    novi::EngineParams p;
+    readParams (p);
     const juce::ScopedLock l (sampleInfoLock);
-    if (original.getNumSamples() < 2) return 0.0;
-    const int bars = 1 << juce::jlimit (0, 3, juce::roundToInt (apvts.getRawParameterValue ("bars")->load()));
-    return bars * 4.0 * 60.0 / (original.getNumSamples() / originalRate);
+    if (original.getNumSamples() < 2) return p.sampleBpm >= novi::minSampleBpm ? (double) p.sampleBpm : 0.0;
+    return novi::SliceEngine::tempoOf (p, original.getNumSamples(), originalRate);
 }
 
 int NoviSliceProcessor::getNumSlices() const
 {
-    const int bars = 1 << juce::jlimit (0, 3, juce::roundToInt (apvts.getRawParameterValue ("bars")->load()));
-    int perBar = 1 << juce::jlimit (0, 3, juce::roundToInt (apvts.getRawParameterValue ("slices")->load()));
-    if (apvts.getRawParameterValue ("triplet")->load() > 0.5f && perBar >= 2)
-        perBar = perBar * 3 / 2;
-    return juce::jlimit (1, novi::maxSlices, bars * perBar);
+    novi::EngineParams p;
+    readParams (p);
+    const juce::ScopedLock l (sampleInfoLock);
+    return novi::SliceEngine::sliceCount (p, original.getNumSamples(), originalRate);
+}
+
+double NoviSliceProcessor::getSliceFraction() const
+{
+    novi::EngineParams p;
+    readParams (p);
+    const juce::ScopedLock l (sampleInfoLock);
+    const double len = original.getNumSamples();
+    if (len < 2) return 1.0 / novi::SliceEngine::sliceCount (p, 0, originalRate);
+    return novi::SliceEngine::sliceLengthOf (p, len, originalRate) / len;
+}
+
+bool NoviSliceProcessor::isLoopBpmManual() const
+{
+    return apvts.getRawParameterValue ("sampleBpm")->load() >= novi::minSampleBpm;
+}
+
+void NoviSliceProcessor::setLoopBpm (double bpm)
+{
+    if (auto* p = apvts.getParameter ("sampleBpm"))
+    {
+        const float v = bpm >= novi::minSampleBpm ? (float) juce::jlimit ((double) novi::minSampleBpm, (double) novi::maxSampleBpm, bpm) : 0.f;
+        p->beginChangeGesture();
+        p->setValueNotifyingHost (p->convertTo0to1 (v));
+        p->endChangeGesture();
+    }
 }
 
 void NoviSliceProcessor::shuffleOrder()

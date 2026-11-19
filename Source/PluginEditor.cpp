@@ -245,6 +245,10 @@ void LcdDisplay::paint (juce::Graphics& g)
     g.setColour (col::lcdInk);
     g.setFont (fonts.mono (15.f));
     juce::String left = bpm > 0.0 ? "BPM " + juce::String (bpm, 1) : juce::String ("BPM ---.-");
+    if (bpm > 0.0 && ! proc.isLoopBpmManual()) left << "?";
+    const double host = proc.hostBpm.load();
+    if (bpm > 0.0 && host > 0.0 && proc.apvts.getRawParameterValue ("sync")->load() > 0.5f)
+        left << " > " << juce::String (host, 1);
     left << "   " << juce::String (total).paddedLeft ('0', 2) << " SLICES";
     if (name.isNotEmpty())
         left << "   " << name.toUpperCase();
@@ -287,12 +291,13 @@ void LcdDisplay::paint (juce::Graphics& g)
     else
     {
         const int activeSlice = proc.engine.uiActiveSlice.load();
-        const float sliceW = wave.getWidth() / total;
+        const float sliceW = (float) (wave.getWidth() * proc.getSliceFraction());
 
         if (activeSlice >= 0 && activeSlice < total)
         {
             g.setColour (col::lcdInk);
-            g.fillRect (Rectangle<float> (wave.getX() + activeSlice * sliceW, wave.getY() - 4.f, sliceW, wave.getHeight() + 8.f));
+            const float sx = wave.getX() + activeSlice * sliceW;
+            g.fillRect (Rectangle<float> (sx, wave.getY() - 4.f, juce::jmin (sliceW, wave.getRight() - sx), wave.getHeight() + 8.f));
         }
 
         const int nPeaks = (int) peaks.size() / 2;
@@ -332,7 +337,7 @@ void LcdDisplay::paint (juce::Graphics& g)
             {
                 g.setColour (s == activeSlice ? col::lcdInk : col::lcdDim);
                 g.setFont (fonts.mono (12.f));
-                g.drawText (juce::String (s + 1).paddedLeft ('0', 2), Rectangle<float> (x, numbers.getY(), sliceW * (total > 16 ? 2.f : 1.f), numbers.getHeight()),
+                g.drawText (juce::String (s + 1).paddedLeft ('0', 2), Rectangle<float> (x, numbers.getY(), juce::jmin (sliceW * (total > 16 ? 2.f : 1.f), wave.getRight() - x), numbers.getHeight()),
                             juce::Justification::centred, false);
             }
         }
@@ -341,7 +346,7 @@ void LcdDisplay::paint (juce::Graphics& g)
         if (ph >= 0.f)
         {
             const float x = wave.getX() + ph * wave.getWidth();
-            g.setColour (activeSlice >= 0 && juce::jlimit (0, total - 1, (int) (ph * total)) == activeSlice ? col::lcdTop : col::lcdInk);
+            g.setColour (activeSlice >= 0 && juce::jlimit (0, total - 1, (int) ((x - wave.getX()) / sliceW)) == activeSlice ? col::lcdTop : col::lcdInk);
             g.fillRect (x - 1.f, wave.getY() - 4.f, 2.f, wave.getHeight() + 8.f);
         }
     }
@@ -374,7 +379,8 @@ void LcdDisplay::mouseDown (const juce::MouseEvent& e)
         return;
     const int total = proc.getNumSlices();
     auto wave = getLocalBounds().toFloat().reduced (22.f, 20.f);
-    const int slice = juce::jlimit (0, total - 1, (int) ((e.position.x - wave.getX()) / wave.getWidth() * total));
+    const double frac = juce::jmax (1e-6, proc.getSliceFraction());
+    const int slice = juce::jlimit (0, total - 1, (int) ((e.position.x - wave.getX()) / wave.getWidth() / frac));
     // Find the key that plays this slice (order may be shuffled).
     int key = slice;
     for (int k = 0; k < total; ++k)
@@ -530,12 +536,135 @@ void PerfButton::mouseUp (const juce::MouseEvent&)
 
 // =====================================================================
 
+BpmBox::BpmBox (NoviSliceProcessor& p, const NoviFonts& f)
+    : proc (p), fonts (f),
+      attachment (*p.apvts.getParameter ("sampleBpm"), [this] (float v) { value = v; repaint(); }, nullptr)
+{
+    attachment.sendInitialUpdate();
+    editor.setFont (fonts.mono (15.f));
+    editor.setJustification (juce::Justification::centred);
+    editor.setColour (juce::TextEditor::backgroundColourId, col::lcdTop);
+    editor.setColour (juce::TextEditor::textColourId, col::lcdInk);
+    editor.setColour (juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
+    editor.setColour (juce::TextEditor::focusedOutlineColourId, col::lcdInk);
+    editor.setColour (juce::CaretComponent::caretColourId, col::lcdInk);
+    editor.setInputRestrictions (6, "0123456789.");
+    editor.onReturnKey = [this] { commitText(); };
+    editor.onFocusLost = [this] { commitText(); };
+    editor.onEscapeKey = [this] { editor.setVisible (false); };
+    addChildComponent (editor);
+    setTooltip ("Loop BPM: drag or use the arrows to set the sample's tempo, double-click to type it. Below 40 = AUTO (worked out from BARS).");
+}
+
+double BpmBox::startingTempo() const
+{
+    if (value >= novi::minSampleBpm) return value;
+    const double guess = proc.getLoopBpm();
+    return guess >= novi::minSampleBpm ? std::round (guess * 10.0) / 10.0 : 120.0;
+}
+
+void BpmBox::set (double bpm)
+{
+    const float v = bpm >= novi::minSampleBpm ? (float) juce::jlimit ((double) novi::minSampleBpm, (double) novi::maxSampleBpm, bpm) : 0.f;
+    attachment.setValueAsCompleteGesture (v);
+}
+
+void BpmBox::commitText()
+{
+    if (! editor.isVisible()) return;
+    const auto t = editor.getText().trim();
+    editor.setVisible (false);
+    set (t.isEmpty() ? 0.0 : t.getDoubleValue());
+}
+
+juce::Rectangle<float> BpmBox::arrowArea() const
+{
+    return getLocalBounds().toFloat().reduced (3.f).removeFromRight (15.f);
+}
+
+void BpmBox::resized()
+{
+    editor.setBounds (getLocalBounds().reduced (3).withTrimmedRight (15));
+}
+
+void BpmBox::paint (juce::Graphics& g)
+{
+    auto r = getLocalBounds().toFloat().reduced (0.5f);
+    g.setColour (col::bezel);
+    g.fillRoundedRectangle (r, 4.f);
+    auto glass = r.reduced (3.f);
+    g.setGradientFill (juce::ColourGradient (col::lcdTop, 0.f, glass.getY(), col::lcdBot, 0.f, glass.getBottom(), false));
+    g.fillRoundedRectangle (glass, 2.f);
+
+    const bool manual = value >= novi::minSampleBpm;
+    g.setColour (manual ? col::lcdInk : col::lcdDim);
+    g.setFont (fonts.mono (15.f));
+    g.drawText (manual ? juce::String (value, 1) : juce::String ("AUTO"), glass.withTrimmedRight (13.f), juce::Justification::centred, false);
+
+    auto arrows = arrowArea();
+    g.setColour (col::lcdInk.withAlpha (0.25f));
+    g.fillRect (arrows.getX(), arrows.getY() + 2.f, 1.f, arrows.getHeight() - 4.f);
+    g.setColour (col::lcdInk);
+    const float cx = arrows.getCentreX() + 1.f, cy = arrows.getCentreY();
+    juce::Path up, down;
+    up.addTriangle (cx - 4.f, cy - 2.f, cx + 4.f, cy - 2.f, cx, cy - 7.f);
+    down.addTriangle (cx - 4.f, cy + 2.f, cx + 4.f, cy + 2.f, cx, cy + 7.f);
+    g.fillPath (up);
+    g.fillPath (down);
+}
+
+void BpmBox::mouseDown (const juce::MouseEvent& e)
+{
+    dragging = false;
+    if (arrowArea().contains (e.position))
+    {
+        const double step = e.mods.isShiftDown() ? 0.1 : 1.0;
+        const bool upArrow = e.position.y < arrowArea().getCentreY();
+        if (value < novi::minSampleBpm)
+            set (upArrow ? startingTempo() : 0.0);       // from AUTO, the first press locks in the detected tempo
+        else
+        {
+            const double next = value + (upArrow ? step : -step);
+            set (next < novi::minSampleBpm ? 0.0 : next);
+        }
+        return;
+    }
+    dragStart = startingTempo();
+    dragging = true;
+    attachment.beginGesture();
+}
+
+void BpmBox::mouseDrag (const juce::MouseEvent& e)
+{
+    if (! dragging) return;
+    const double perPixel = e.mods.isShiftDown() ? 0.02 : 0.2;
+    double v = dragStart - e.getDistanceFromDragStartY() * perPixel;
+    v = std::round (v * (e.mods.isShiftDown() ? 100.0 : 10.0)) / (e.mods.isShiftDown() ? 100.0 : 10.0);
+    attachment.setValueAsPartOfGesture ((float) juce::jlimit ((double) novi::minSampleBpm, (double) novi::maxSampleBpm, v));
+}
+
+void BpmBox::mouseUp (const juce::MouseEvent&)
+{
+    if (dragging) attachment.endGesture();
+    dragging = false;
+}
+
+void BpmBox::mouseDoubleClick (const juce::MouseEvent& e)
+{
+    if (arrowArea().contains (e.position)) return;
+    editor.setText (value >= novi::minSampleBpm ? juce::String (value, 1) : juce::String(), false);
+    editor.setVisible (true);
+    editor.grabKeyboardFocus();
+    editor.selectAll();
+}
+
 FacePanel::FacePanel (NoviSliceProcessor& p) : proc (p)
 {
     setLookAndFeel (&look);
     setOpaque (true);
 
     addAndMakeVisible (lcd);
+    addAndMakeVisible (bpmBox);
 
     for (auto* b : { &loadButton, &shuffleButton, &resetButton })
         addAndMakeVisible (*b);
@@ -663,17 +792,17 @@ void FacePanel::resized()
     // control strip
     int x = 24;
     const int y = 344, h = 34;
-    auto next = [&] (juce::Component& c, int w) { c.setBounds (x, y, w, h); x += w + 9; };
-    next (loadButton, 62);
-    choices["bars"].box->setBounds (x, y + 4, 52, 26); x += 52 + 9;
-    choices["slices"].box->setBounds (x, y + 4, 52, 26); x += 52 + 13;
-    next (*toggles["triplet"].button, 66);
-    next (*toggles["full"].button, 54);
-    next (*toggles["loop"].button, 54);
-    next (*toggles["sync"].button, 54);
-    next (*toggles["keylock"].button, 72);
-    x += 4;
-    next (shuffleButton, 70);
+    auto next = [&] (juce::Component& c, int w, int gap = 8) { c.setBounds (x, y, w, h); x += w + gap; };
+    next (loadButton, 52);
+    bpmBox.setBounds (x, y + 4, 70, 26); x += 70 + 8;
+    choices["bars"].box->setBounds (x, y + 4, 48, 26); x += 48 + 6;
+    choices["slices"].box->setBounds (x, y + 4, 48, 26); x += 48 + 10;
+    next (*toggles["triplet"].button, 58);
+    next (*toggles["full"].button, 46);
+    next (*toggles["loop"].button, 46);
+    next (*toggles["sync"].button, 48);
+    next (*toggles["keylock"].button, 64, 10);
+    next (shuffleButton, 60, 6);
     resetButton.setBounds (x, y, 728 - x, h);
 
     // row 1
@@ -789,6 +918,7 @@ void FacePanel::paintChassis (juce::Graphics& g)
     // control strip labels
     g.setFont (fonts.mono (10.5f));
     g.setColour (col::printLight);
+    g.drawText ("LOOP BPM", bpmBox.getBounds().translated (0, 28).withHeight (12), juce::Justification::centred, false);
     g.drawText ("BARS", choices["bars"].box->getBounds().translated (0, 28).withHeight (12), juce::Justification::centred, false);
     g.drawText ("PER BAR", choices["slices"].box->getBounds().translated (0, 28).withHeight (12), juce::Justification::centred, false);
     g.drawText ("SLICE ORDER", shuffleButton.getBounds().getUnion (resetButton.getBounds()).translated (0, 38).withHeight (12), juce::Justification::centred, false);
@@ -826,7 +956,7 @@ void FacePanel::paintChassis (juce::Graphics& g)
     g.setColour (col::printLight);
     g.drawText ("SLICES ON WHITE KEYS FROM C5", Rectangle<int> (754, 92, 220, 14), juce::Justification::centredLeft, false);
     g.drawText ("HOLD TO PLAY  -  SHIFT-CLICK TO LATCH  -  KEYS C3-D#4", Rectangle<int> (752, 470, 320, 14), juce::Justification::centredLeft, false);
-    g.drawText ("CLICK THE SCREEN TO AUDITION  -  DRAG A FILE ONTO IT TO LOAD", Rectangle<int> (24, 318, 704, 14), juce::Justification::centredLeft, false);
+    g.drawText ("CLICK THE SCREEN TO AUDITION  -  DROP A FILE ON IT TO LOAD  -  DOUBLE-CLICK LOOP BPM TO TYPE A TEMPO", Rectangle<int> (24, 318, 704, 14), juce::Justification::centredLeft, false);
 
     // output meter frame
     auto meter = Rectangle<float> (636.f, (float) meterY, 18.f, 116.f);
@@ -872,6 +1002,15 @@ void FacePanel::paintOverChildren (juce::Graphics& g)
 void FacePanel::refresh()
 {
     lcd.refresh();
+    {
+        auto& barsBox = *choices["bars"].box;
+        const bool autoTempo = ! proc.isLoopBpmManual();
+        if (barsBox.isEnabled() != autoTempo)
+        {
+            barsBox.setEnabled (autoTempo);
+            barsBox.setColour (juce::ComboBox::textColourId, autoTempo ? col::lcdInk : col::lcdDim);
+        }
+    }
     const int total = proc.getNumSlices();
     bankB.setEnabled (total > 16);
     if (total <= 16 && bank == 1)

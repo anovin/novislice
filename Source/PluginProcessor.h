@@ -40,8 +40,13 @@ public:
     juce::String getSampleName() const;
     bool hasSample() const;
     std::vector<float> getPeaks() const;          // interleaved min/max, numPeakColumns pairs
-    double getLoopBpm() const;                    // from length and BARS
+    double getLoopBpm() const;                    // Loop BPM if set, otherwise from length and BARS
     int getNumSlices() const;
+    double getSliceFraction() const;              // one slice as a fraction of the loop
+    bool isLoopBpmManual() const;
+    void setLoopBpm (double bpm);                 // below minSampleBpm = auto
+    std::atomic<double> hostBpm { 0.0 };          // last tempo reported by the DAW
+    void readParams (novi::EngineParams& p) const;
     void shuffleOrder();
     void resetOrder();
     bool isShuffled() const;
@@ -61,7 +66,6 @@ private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
     bool loadFromMemory (const juce::MemoryBlock& data, const juce::String& name, const juce::String& path, bool guessBars);
     void rebuildPlaybackData();                   // resample the original to the current rate
-    void readParams (novi::EngineParams& p) const;
 
     juce::AudioFormatManager formats;
 

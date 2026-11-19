@@ -107,20 +107,64 @@ void SliceEngine::setSample (const SampleData* data)
     }
 }
 
+int SliceEngine::slicesPerBar (const EngineParams& p)
+{
+    int perBar = std::max (1, p.slicesPerBar);
+    if (p.triplet && perBar >= 2)
+        perBar = perBar * 3 / 2;
+    return perBar;
+}
+
+double SliceEngine::tempoOf (const EngineParams& p, double lengthSamples, double sampleRate)
+{
+    if (p.sampleBpm >= minSampleBpm)
+        return std::min ((double) p.sampleBpm, (double) maxSampleBpm);
+    if (lengthSamples < 2 || sampleRate <= 0)
+        return 0.0;
+    return std::max (1, p.bars) * 4.0 * 60.0 / (lengthSamples / sampleRate);
+}
+
+double SliceEngine::sliceLengthOf (const EngineParams& p, double lengthSamples, double sampleRate)
+{
+    if (lengthSamples < 2)
+        return 1.0;
+    if (p.sampleBpm >= minSampleBpm)
+    {
+        // The grid follows the tempo: one bar = 4 beats at the loop's BPM.
+        const double bar = 240.0 / tempoOf (p, lengthSamples, sampleRate) * sampleRate;
+        double len = bar / slicesPerBar (p);
+        // Never more than maxSlices across the loop.
+        if (lengthSamples / len > maxSlices + 0.01)
+            len = lengthSamples / maxSlices;
+        return std::max (1.0, len);
+    }
+    return lengthSamples / sliceCount (p, lengthSamples, sampleRate);
+}
+
+int SliceEngine::sliceCount (const EngineParams& p, double lengthSamples, double sampleRate)
+{
+    if (p.sampleBpm >= minSampleBpm && lengthSamples >= 2)
+    {
+        const double len = sliceLengthOf (p, lengthSamples, sampleRate);
+        // Ignore a sliver of tail shorter than 10% of a slice.
+        return std::clamp ((int) std::ceil (lengthSamples / len - 0.1), 1, maxSlices);
+    }
+    return std::clamp (std::max (1, p.bars) * slicesPerBar (p), 1, maxSlices);
+}
+
 int SliceEngine::numSlices() const
 {
-    int perBar = std::max (1, params.slicesPerBar);
-    if (params.triplet && perBar >= 2)
-        perBar = perBar * 3 / 2;
-    return std::clamp (std::max (1, params.bars) * perBar, 1, maxSlices);
+    return sliceCount (params, sample != nullptr ? sample->length() : 0, sr);
 }
 
 double SliceEngine::loopBpm() const
 {
-    if (sample == nullptr || sample->length() < 2)
-        return 0.0;
-    const double seconds = sample->length() / sr;
-    return std::max (1, params.bars) * 4.0 * 60.0 / seconds;
+    return tempoOf (params, sample != nullptr ? sample->length() : 0, sr);
+}
+
+double SliceEngine::sliceLength() const
+{
+    return sliceLengthOf (params, sample != nullptr ? sample->length() : 0, sr);
 }
 
 float SliceEngine::randomUni()
@@ -234,7 +278,7 @@ void SliceEngine::startVoice (int key, int note, float velocity)
         slice = key;
 
     const double len = sample->length();
-    const double sliceLen = len / total;
+    const double sliceLen = sliceLength();
 
     Voice& v = *target;
     v = Voice();
@@ -243,7 +287,7 @@ void SliceEngine::startVoice (int key, int note, float velocity)
     v.note = note;
     v.slice = slice;
     v.velocity = std::clamp (velocity, 0.f, 1.f);
-    v.regionStart = slice * sliceLen;
+    v.regionStart = std::min (slice * sliceLen, len - 16.0);
     v.regionEnd = params.full ? len : std::min (len, (slice + 1) * sliceLen);
     v.head = perf[fxReverse] ? v.regionEnd - 1.0 : v.regionStart;
     v.env = params.attackMs > 0.f ? 0.f : 1.f;

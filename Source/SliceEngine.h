@@ -27,6 +27,8 @@ enum PerfFx
 const char* perfFxName (int index);
 
 constexpr int maxSlices     = 32;
+constexpr float minSampleBpm = 40.f;   // a Loop BPM below this means "auto"
+constexpr float maxSampleBpm = 300.f;
 constexpr int firstSliceKey = 60;  // C5 in FL Studio; slices go up the white keys
 constexpr int firstPerfKey  = 36;  // C3 in FL Studio; effects go up chromatically
 
@@ -37,7 +39,8 @@ int sliceKeyForNote (int note);
 
 struct EngineParams
 {
-    int   bars = 4;            // 1, 2, 4, 8
+    float sampleBpm = 0.f;     // tempo of the loop as set by the user; below minSampleBpm = auto (from BARS)
+    int   bars = 4;            // 1, 2, 4, 8 (used to work out the tempo when sampleBpm is auto)
     int   slicesPerBar = 4;    // 1, 2, 4, 8
     bool  triplet = false;     // 2/4/8 per bar become 3/6/12
     bool  full = false;        // keep playing past the slice to the end of the loop
@@ -101,7 +104,14 @@ public:
     void process (float* left, float* right, int n, const Transport& t);
 
     int  numSlices() const;
-    double loopBpm() const;       // tempo implied by the loop length and the BARS setting
+    double loopBpm() const;       // the loop's tempo: Loop BPM if set, otherwise from length and BARS
+    double sliceLength() const;   // in samples
+
+    // Grid maths shared with the UI. lengthSamples/sampleRate describe the loop.
+    static int    sliceCount (const EngineParams& p, double lengthSamples, double sampleRate);
+    static double tempoOf (const EngineParams& p, double lengthSamples, double sampleRate);
+    static double sliceLengthOf (const EngineParams& p, double lengthSamples, double sampleRate);
+    static int    slicesPerBar (const EngineParams& p);
 
     // For the UI
     std::atomic<int>   uiActiveSlice { -1 };   // slice index sounding now
