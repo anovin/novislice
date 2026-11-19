@@ -1,0 +1,59 @@
+name: Build NoviSlice (Mac)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Configure (universal: Apple Silicon + Intel)"
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build VST3, AU and engine tests
+        run: cmake --build build --target NoviSlice_VST3 NoviSlice_AU EngineTest -j 4
+
+      - name: Run engine tests
+        run: ./build/EngineTest | tail -1
+
+      - name: Validate the AU
+        run: |
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R build/NoviSlice_artefacts/Release/AU/NoviSlice.component ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          sleep 3
+          auval -v aumu NovS Anov | tail -5
+
+      - name: Sign (ad-hoc) and package
+        run: |
+          ART=build/NoviSlice_artefacts/Release
+          codesign --force --deep --sign - "$ART/VST3/NoviSlice.vst3"
+          codesign --force --deep --sign - "$ART/AU/NoviSlice.component"
+          mkdir -p NoviSlice
+          cp -R "$ART/VST3/NoviSlice.vst3" "$ART/AU/NoviSlice.component" NoviSlice/
+          cp packaging/Install-NoviSlice.command NoviSlice/
+          chmod +x NoviSlice/Install-NoviSlice.command
+          cp README.md NoviSlice/
+          ditto -c -k --keepParent NoviSlice NoviSlice-mac.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NoviSlice-mac
+          path: NoviSlice-mac.zip
+
+      - name: Publish to the "latest" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest NoviSlice-mac.zip \
+            --title "NoviSlice (latest Mac build)" \
+            --notes "Download NoviSlice-mac.zip, unzip it, then right-click Install-NoviSlice.command and choose Open." \
+            --target "${{ github.sha }}" --latest
